@@ -1,0 +1,826 @@
+{% extends "base.html" %}
+{% block titulo %}Dossiê - {{ analise.municipio }}/{{ analise.uf }}{% endblock %}
+
+{% set d = analise.dados %}
+{% set sc = analise.scorecard %}
+{% set ibge = d.ibge.dados if d.ibge and d.ibge.ok else None %}
+{% set rgf = d.siconfi.dados.rgf if d.siconfi and d.siconfi.ok and d.siconfi.dados.rgf else None %}
+{% set orc = d.siconfi.dados.rreo_orcamento if d.siconfi and d.siconfi.ok and d.siconfi.dados.rreo_orcamento else None %}
+{% set capag = d.capag.dados if d.capag and d.capag.ok else None %}
+{% set pncp = d.pncp.dados if d.pncp and d.pncp.ok else None %}
+{% set transf = d.transferencias.dados if d.transferencias and d.transferencias.ok else None %}
+{% set conv = d.convenios.dados if d.convenios and d.convenios.ok else None %}
+{% set sanc = d.transparencia.dados if d.transparencia and d.transparencia.ok else None %}
+{% set cad = d.cnpj.dados if d.cnpj and d.cnpj.ok else None %}
+{% set obs = d.observacoes_manuais.dados if d.observacoes_manuais else None %}
+{% set pag = d.pagamentos.dados if d.pagamentos and d.pagamentos.ok else None %}
+{% set caixa = pag.caixa_por_ano[0].nao_vinculados if pag and pag.caixa_por_ano else None %}
+
+{% macro barra_limite(rotulo, valor_bruto, limite, alerta) %}
+  {# valores ausentes em análises antigas chegam como Undefined; normaliza antes de comparar #}
+  {% set valor = valor_bruto if valor_bruto is number else none %}
+  {% set alerta = alerta if alerta is number else none %}
+  {% if valor is not none and limite %}
+  <div class="medidor">
+    <div class="medidor-cabecalho">
+      <span>{{ rotulo }}</span>
+      <strong>{{ valor|pct }} <span class="dica">de {{ limite|pct(0) }}</span></strong>
+    </div>
+    <div class="medidor-trilha">
+      {% set pos = (valor / limite * 100) %}
+      <div class="medidor-preenchimento {{ 'risco-alto' if valor >= limite else ('risco-medio' if alerta and valor >= alerta else 'risco-baixo') }}"
+           style="width: {{ [pos, 100]|min|round(1) }}%"></div>
+      {% if alerta %}<div class="medidor-marca" style="left: {{ (alerta / limite * 100)|round(1) }}%"
+           title="Limite de alerta: {{ alerta|pct }}"></div>{% endif %}
+    </div>
+    <span class="dica">
+      {% if valor >= limite %}Acima do limite legal
+      {% elif alerta and valor >= alerta %}Acima do limite de alerta ({{ alerta|pct }})
+      {% else %}Dentro do limite{% endif %}
+    </span>
+  </div>
+  {% endif %}
+{% endmacro %}
+
+{% macro anel_score(score, semaforo) %}
+  {% set cores = {"verde": "#1e7e34", "amarelo": "#b8860b", "vermelho": "#b02a37", "indefinido": "#6c757d"} %}
+  {% set cor = cores.get(semaforo, "#6c757d") %}
+  {% set pct = (score or 0) / 100 %}
+  <svg width="104" height="104" viewBox="0 0 104 104" role="img"
+       aria-label="Score {{ score }} de 100, semáforo {{ semaforo }}">
+    <circle cx="52" cy="52" r="44" fill="none" stroke="#e9edf2" stroke-width="11"/>
+    <circle cx="52" cy="52" r="44" fill="none" stroke="{{ cor }}" stroke-width="11"
+            stroke-linecap="round" transform="rotate(-90 52 52)"
+            stroke-dasharray="{{ (2 * 3.14159 * 44) | round(1) }}"
+            stroke-dashoffset="{{ (2 * 3.14159 * 44 * (1 - pct)) | round(1) }}"/>
+    <text x="52" y="50" text-anchor="middle" font-size="27" font-weight="700" fill="{{ cor }}">
+      {{ score if score is not none else "-" }}</text>
+    <text x="52" y="68" text-anchor="middle" font-size="11" fill="#6c757d">de 100</text>
+  </svg>
+{% endmacro %}
+
+{% block corpo %}
+
+<div class="painel">
+<div class="coluna-analise">
+
+{% if erro_dossie %}
+<div class="aviso-erro nao-imprimir">
+  A coleta de dados e o scorecard foram concluídos, mas a redação do dossiê pela IA falhou:
+  <code>{{ erro_dossie }}</code>. Verifique a chave da IA no <code>.env</code> e refaça a análise.
+</div>
+{% endif %}
+
+<!-- ===== Cabeçalho ===== -->
+<div class="cartao">
+  {% if sc.confiavel is defined and not sc.confiavel %}
+  <div class="aviso-erro" style="margin-bottom:1rem">
+    <strong>⚠ Score de baixa confiabilidade - cobertura de dados {{ sc.cobertura_dados_pct }}%.</strong>
+    {% if sc.bloco_pagamento_ausente %}
+      Os demonstrativos fiscais (RGF e RREO) não foram localizados nas consultas automáticas ao
+      SICONFI, então <strong>o bloco de comportamento de pagamento - o mais importante da análise -
+      não pôde ser avaliado</strong>. A nota acima vem apenas de indicadores periféricos (CAPAG,
+      porte, sanções, convênios) e <strong>não deve ser lida como aprovação de crédito</strong>.
+      Recomenda-se verificação manual do ente diretamente no SICONFI e consulta reforçada
+      (Serasa, CAUC) antes de qualquer decisão.
+    {% else %}
+      A nota reflete informação parcial. Leia com cautela e complemente com verificação manual.
+    {% endif %}
+  </div>
+  {% endif %}
+  <div class="cabecalho-dossie">
+    <div class="score-anel">
+      <div style="{{ 'opacity:0.45; filter:grayscale(0.6)' if sc.confiavel is defined and not sc.confiavel else '' }}"
+           title="{{ 'Score de baixa confiabilidade - ver aviso acima' if sc.confiavel is defined and not sc.confiavel else '' }}">
+        {{ anel_score(analise.score, analise.semaforo) }}
+      </div>
+      <div>
+        <h2 style="margin:0 0 0.3rem">{{ analise.municipio }}/{{ analise.uf }}</h2>
+        <span class="semaforo {{ analise.semaforo }}">{{ analise.semaforo }}</span>
+        {% if sc.classificacao_risco %}
+        <span class="pill {{ sc.classificacao_risco.tom }}" style="margin-left:0.35rem"
+              title="Classificação de risco de crédito - o setor de licitações decide sobre a exposição">
+          {{ sc.classificacao_risco.rotulo }}</span>
+        {% endif %}
+        {% if sc.ressalvas %}<span class="pill medio" style="margin-left:0.35rem">com atenção</span>{% endif %}
+        <div class="dica" style="margin-top:0.45rem">
+          Análise #{{ analise.id }} - {{ analise.criado_em.replace("T", " às ") }}<br>
+          {% if analise.cnpj %}CNPJ {{ analise.cnpj }} ·{% endif %}
+          cobertura de dados: {{ sc.cobertura_dados_pct }}%
+        </div>
+      </div>
+    </div>
+    <div style="min-width:230px">
+      {% if sc.restricoes_aplicadas %}
+        {% for r in sc.restricoes_aplicadas %}
+        <div class="pill ruim" style="display:block; margin-bottom:0.3rem; text-transform:none;
+             padding:0.35rem 0.6rem; line-height:1.35">⚠ {{ r }}</div>
+        {% endfor %}
+      {% elif not sc.ressalvas %}
+        <div class="pill bom" style="display:block; padding:0.35rem 0.6rem; text-transform:none">
+          ✓ Nenhuma restrição aplicada</div>
+      {% endif %}
+      {% for r in sc.ressalvas %}
+      <div class="pill medio" style="display:block; margin-bottom:0.3rem; text-transform:none;
+           padding:0.35rem 0.6rem; line-height:1.35">⚑ Atenção: {{ r }}</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if sc.blocos %}
+  <div class="grade-blocos" style="margin-top:1.2rem">
+    {% for b in sc.blocos %}
+    {% set cor = "#1e7e34" if b.pct is not none and b.pct >= 70 else ("#b8860b" if b.pct is not none and b.pct >= 45 else "#b02a37") %}
+    <div class="bloco-card">
+      <span class="bloco-nome">{{ b.bloco }}</span>
+      <div class="bloco-pontos">
+        {% if b.pct is not none %}{{ b.pontos }}<span style="font-size:0.85rem; color:var(--cinza)">/{{ b.maximo }}</span>
+        <span class="pill {{ 'bom' if b.pct >= 70 else ('medio' if b.pct >= 45 else 'ruim') }}"
+              style="margin-left:0.3rem">{{ b.pct }}%</span>
+        {% else %}<span class="dica">sem dado</span>{% endif %}
+      </div>
+      <div class="bloco-trilha">
+        <div class="bloco-preenchimento" style="width:{{ b.pct or 0 }}%; background:{{ cor }}"></div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ===== Indicadores-chave ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Indicadores-chave</h3>
+  <div class="grade-cards">
+    <div class="card-indicador">
+      <span class="card-rotulo">Nota CAPAG</span>
+      <span class="card-valor {{ 'destaque-bom' if capag and capag.nota_capag and capag.nota_capag[0] in 'AB' else ('destaque-ruim' if capag and capag.nota_capag and capag.nota_capag[0] in 'CD' else '') }}">
+        {{ capag.nota_capag if capag else "-" }}
+      </span>
+      <span class="card-nota">Tesouro Nacional</span>
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Receita Corrente Líquida</span>
+      <span class="card-valor">{{ rgf.rcl_ajustada|moeda_curta if rgf else "-" }}</span>
+      <span class="card-nota">{{ rgf.referencia if rgf else "sem dado" }}</span>
+    </div>
+    <div class="card-indicador destacado">
+      <span class="card-rotulo">Caixa livre líquido</span>
+      {% if caixa and caixa.disponibilidade_liquida_apos_rp is not none %}
+      <span class="card-valor {{ 'destaque-bom' if caixa.disponibilidade_liquida_apos_rp >= 0 else 'destaque-ruim' }}">
+        {{ caixa.disponibilidade_liquida_apos_rp|moeda_curta }}
+      </span>
+      <span class="card-nota">após restos a pagar, {{ pag.caixa_por_ano[0].ano }}</span>
+      {% else %}<span class="card-valor">-</span><span class="card-nota">sem dado</span>{% endif %}
+    </div>
+    <div class="card-indicador destacado">
+      <span class="card-rotulo">Margem de caixa / RCL</span>
+      {% if sc.margem_caixa %}
+      <span class="card-valor {{ 'destaque-bom' if sc.margem_caixa.tom == 'bom' else ('destaque-ruim' if sc.margem_caixa.tom == 'ruim' else '') }}">
+        {{ sc.margem_caixa.pct|pct }}
+      </span>
+      <span class="card-nota">
+        <span class="pill {{ sc.margem_caixa.tom }}">{{ sc.margem_caixa.faixa }}</span>
+      </span>
+      {% else %}<span class="card-valor">-</span><span class="card-nota">sem dado</span>{% endif %}
+    </div>
+    <div class="card-indicador destacado">
+      <span class="card-rotulo">Cobertura das obrigações</span>
+      {% if caixa and caixa.indice_cobertura is not none %}
+      <span class="card-valor {{ 'destaque-bom' if caixa.indice_cobertura >= 1 else 'destaque-ruim' }}">
+        {{ caixa.indice_cobertura|numero(2) }}x
+      </span>
+      <span class="card-nota">caixa ÷ obrigações financeiras</span>
+      {% else %}<span class="card-valor">-</span><span class="card-nota">sem dado</span>{% endif %}
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Despesas pagas</span>
+      {% if pag and pag.execucao_pagamento %}
+      <span class="card-valor">{{ pag.execucao_pagamento.pct_pago|pct }}</span>
+      <span class="card-nota">do que foi liquidado ({{ pag.execucao_pagamento.referencia }})</span>
+      {% else %}<span class="card-valor">-</span><span class="card-nota">sem dado</span>{% endif %}
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Repasses federais (24 meses)</span>
+      <span class="card-valor">{{ transf.total_recebido|moeda_curta if transf else "-" }}</span>
+      <span class="card-nota">
+        {% if transf %}média de {{ transf.media_mensal|moeda_curta }}/mês{% else %}sem dado{% endif %}
+      </span>
+    </div>
+  </div>
+
+  {% if rgf %}
+  <div class="grade-medidores">
+    {{ barra_limite("Despesa com pessoal", rgf.pessoal_pct_rcl, rgf.pessoal_limite_pct or 54, rgf.pessoal_alerta_pct or 48.6) }}
+    {% if rgf.dcl_pct_rcl is number and rgf.dcl_pct_rcl < 0 %}
+    <div class="medidor">
+      <div class="medidor-cabecalho">
+        <span>Dívida consolidada líquida</span>
+        <strong class="destaque-bom">{{ rgf.dcl_pct_rcl|pct }}</strong>
+      </div>
+      <div class="medidor-trilha">
+        <div class="medidor-preenchimento risco-baixo" style="width:100%"></div>
+      </div>
+      <span class="dica">Posição muito favorável: credor líquido - o ente tem mais ativo
+      financeiro que dívida. Limite máximo: 120%.</span>
+    </div>
+    {% else %}
+    {{ barra_limite("Dívida consolidada líquida", rgf.dcl_pct_rcl, 120, 100) }}
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<!-- ===== Scorecard ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Scorecard</h3>
+  <table>
+    <thead><tr><th>Dimensão</th><th style="width:110px">Pontos</th><th>Detalhe</th></tr></thead>
+    <tbody>
+      {% for dim in sc.dimensoes %}
+      <tr class="{{ 'linha-sem-dado' if dim.pontos is none }}">
+        <td>{{ dim.dimensao }}</td>
+        <td>
+          {% if dim.pontos is not none %}
+            <strong>{{ dim.pontos }}</strong>/{{ dim.maximo }}
+          {% else %}<em class="dica">sem dado</em>{% endif %}
+        </td>
+        <td>{{ dim.detalhe }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if sc.restricoes_aplicadas %}
+  <p class="dica" style="margin-bottom:0"><strong>Restrições aplicadas</strong> (rebaixam o semáforo):
+    {{ sc.restricoes_aplicadas | join("; ") }}</p>
+  {% endif %}
+  {% if sc.ressalvas %}
+  <p class="dica" style="margin-bottom:0"><strong>Ressalvas</strong> (não rebaixam o semáforo, mas
+    merecem atenção): {{ sc.ressalvas | join("; ") }}</p>
+  {% endif %}
+  {% if sc.margem_caixa %}
+  <p class="dica" style="margin-bottom:0">
+    <strong>Margem de caixa:</strong> o caixa livre de {{ sc.margem_caixa.valor|moeda }} equivale a
+    {{ sc.margem_caixa.pct|pct }} da RCL ({{ sc.margem_caixa.faixa }}). Faixas: ≥5% folga forte ·
+    2–5% confortável · 1–2% moderada · 0–1% apertada · &lt;0% negativa. Complementa o índice de
+    cobertura, que diz se as obrigações estão cobertas mas não se a folga é relevante para o porte
+    do orçamento. Não pontua - a mesma disponibilidade já é avaliada em "Liquidez para fornecedores".
+  </p>
+  {% endif %}
+  <p class="dica" style="margin-bottom:0">
+    Faixas: verde {{ sc.faixas.verde }} · amarelo {{ sc.faixas.amarelo }} · vermelho {{ sc.faixas.vermelho }}.
+    O score é normalizado apenas pelas dimensões com dado disponível.
+  </p>
+
+  {% if sc.contexto_nao_pontuado %}
+  <h4 class="subtitulo">Indicadores exibidos mas não pontuados</h4>
+  <table>
+    <thead><tr><th style="width:180px">Indicador</th><th style="width:200px">Valor</th><th>Por que não pontua</th></tr></thead>
+    <tbody>
+      {% for c in sc.contexto_nao_pontuado %}
+      <tr class="linha-sem-dado">
+        <td>{{ c.indicador }}</td><td>{{ c.valor }}</td><td>{{ c.ressalva }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<h3 class="titulo-evidencias">Evidências coletadas</h3>
+
+<!-- ===== Comportamento de pagamento ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Comportamento de pagamento</h3>
+  {% if pag %}
+    <p class="dica">Responde à pergunta que a CAPAG não responde: <strong>este ente paga suas
+    contas?</strong> Os valores de caixa usam <strong>recursos não vinculados</strong> - o dinheiro
+    sem carimbo, único que pode pagar fornecedor comum. O caixa vinculado (saúde, educação, FUNDEB)
+    infla o total mas não está disponível.</p>
+
+    {% if pag.caixa_por_ano %}
+    <h4 class="subtitulo">Disponibilidade de caixa e obrigações (fechamento de cada exercício)</h4>
+    <table>
+      <thead>
+        <tr>
+          <th>Exercício</th><th>Caixa bruto</th><th>Restos a pagar processados</th>
+          <th>RP não processados</th><th>Demais obrigações</th><th>Cobertura</th><th>Caixa livre líquido</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ano in pag.caixa_por_ano %}
+        {% set nv = ano.nao_vinculados %}
+        <tr class="{{ 'linha-alerta' if nv.disponibilidade_liquida_apos_rp is not none and nv.disponibilidade_liquida_apos_rp < 0 }}">
+          <td><strong>{{ ano.ano }}</strong></td>
+          <td>{{ nv.disponibilidade_bruta|moeda_curta }}</td>
+          <td>{{ nv.restos_a_pagar_processados|moeda_curta }}</td>
+          <td>{{ nv.restos_a_pagar_nao_processados|moeda_curta }}</td>
+          <td>{{ nv.demais_obrigacoes_financeiras|moeda_curta }}</td>
+          <td class="{{ 'destaque-bom' if nv.indice_cobertura and nv.indice_cobertura >= 1 else 'destaque-ruim' }}">
+            {{ nv.indice_cobertura|numero(2) }}x</td>
+          <td class="{{ 'destaque-bom' if nv.disponibilidade_liquida_apos_rp is not none and nv.disponibilidade_liquida_apos_rp >= 0 else 'destaque-ruim' }}">
+            {{ nv.disponibilidade_liquida_apos_rp|moeda_curta }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="dica"><strong>Cobertura</strong> é o caixa bruto dividido pelo total das obrigações
+    financeiras. Abaixo de 1,00 significa que o ente encerrou o exercício devendo mais do que tinha
+    em caixa livre. <strong>Caixa livre líquido</strong> é o que sobra depois de abater todos os
+    restos a pagar.</p>
+    {% endif %}
+
+    {% if pag.restos_a_pagar_por_ano %}
+    <h4 class="subtitulo">Restos a pagar: quanto foi pago e quanto foi cancelado</h4>
+    <table>
+      <thead>
+        <tr><th>Referência</th><th>Tipo</th><th>Inscritos</th><th>Pagos</th><th>Cancelados</th><th>Saldo a pagar</th></tr>
+      </thead>
+      <tbody>
+        {% for r in pag.restos_a_pagar_por_ano %}
+          {% for rotulo, bloco in [("Processados (dívida certa)", r.processados), ("Não processados", r.nao_processados)] %}
+          <tr>
+            {% if loop.first %}<td rowspan="2"><strong>{{ r.referencia }}</strong></td>{% endif %}
+            <td>{{ rotulo }}</td>
+            <td>{{ bloco.inscritos|moeda_curta }}</td>
+            <td>{{ bloco.pct_pago|pct }}</td>
+            <td class="{{ 'destaque-ruim' if bloco.pct_cancelado and bloco.pct_cancelado > 15 }}">{{ bloco.pct_cancelado|pct }}</td>
+            <td>{{ bloco.saldo|moeda_curta }}</td>
+          </tr>
+          {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="dica"><strong>Processados</strong> são despesas já liquidadas - dívida líquida e certa,
+    o estágio em que a sua nota fiscal estaria. <strong>Não processados</strong> foram empenhados mas
+    ainda não liquidados. Cancelamento alto de restos a pagar merece atenção: limpa o balanço sem
+    quitar o compromisso com o fornecedor.</p>
+    {% endif %}
+
+    {% if pag.execucao_pagamento %}
+    {% set e = pag.execucao_pagamento %}
+    <h4 class="subtitulo">Execução no exercício corrente ({{ e.referencia }})</h4>
+    <table>
+      <tbody>
+        <tr><td>Despesas empenhadas</td><td>{{ e.empenhadas|moeda }}</td></tr>
+        <tr><td>Despesas liquidadas <span class="dica">(dívida reconhecida)</span></td><td>{{ e.liquidadas|moeda }}</td></tr>
+        <tr><td>Despesas pagas</td><td>{{ e.pagas|moeda }}</td></tr>
+        <tr><td><strong>Liquidado e ainda não pago</strong></td>
+            <td><strong>{{ e.a_pagar|moeda }}</strong> <span class="dica">({{ e.pct_pago|pct }} do liquidado já foi pago)</span></td></tr>
+      </tbody>
+    </table>
+    {% endif %}
+  {% else %}
+    <p class="dica indisponivel">{{ d.pagamentos.erro if d.pagamentos else "não consultado" }}</p>
+  {% endif %}
+</div>
+
+<!-- ===== Transferências federais ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Repasses federais recebidos</h3>
+  {% if transf %}
+    <p class="dica">
+      {{ transf.total_recebido|moeda }} em {{ transf.meses_com_repasse }} meses com repasse
+      ({{ transf.periodo }}). É o fluxo de caixa mais previsível do ente.
+    </p>
+    {% set maxv = transf.serie_mensal | map(attribute="valor") | max %}
+    <div class="grafico-barras">
+      {% for p in transf.serie_mensal %}
+      <div class="barra-coluna" title="{{ p.mes }}: {{ p.valor|moeda }}">
+        <div class="barra" style="height: {{ ((p.valor / maxv * 100) if maxv else 0)|round(1) }}%"></div>
+        <span class="barra-rotulo">{{ p.mes[:2] }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="dica">Meses de {{ transf.serie_mensal[0].mes }} a {{ transf.serie_mensal[-1].mes }}. Passe o mouse para ver o valor.</p>
+    <table>
+      <thead><tr><th>Órgão repassador</th><th style="width:180px">Total no período</th></tr></thead>
+      <tbody>
+        {% for o in transf.principais_orgaos %}
+        <tr><td>{{ o.orgao }}</td><td>{{ o.valor|moeda }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="dica indisponivel">{{ d.transferencias.erro if d.transferencias else "não consultado" }}</p>
+  {% endif %}
+</div>
+
+<!-- ===== Convênios ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Convênios com a União</h3>
+  {% if conv and conv.inadimplentes_total is defined %}
+    {% if conv.inadimplentes_total == 0 and conv.suspensas_total == 0 %}
+      <p class="ok-verde">✓ Nenhum convênio federal inadimplente.</p>
+    {% endif %}
+    {% if conv.inadimplentes_total %}
+    <div class="aviso-erro">
+      <strong>{{ conv.inadimplentes_total }} convênio(s) inadimplente(s)</strong>
+      ({{ conv.inadimplentes_recentes }} com vigência encerrada nos últimos 5 anos),
+      somando {{ conv.valor_inadimplente|moeda }}.
+      Inadimplência em convênio trava novos repasses federais e sinaliza falha na
+      prestação de contas.
+      {% if conv.inadimplentes_truncado %}
+      <br><em>Contagem truncada no teto de paginação - o número real pode ser maior.</em>
+      {% endif %}
+      <table style="margin-top:0.6rem">
+        <thead><tr><th>Objeto</th><th style="width:120px">Valor</th><th style="width:130px">Fim vigência</th><th style="width:70px">Idade</th></tr></thead>
+        <tbody>
+          {% for c in conv.inadimplentes %}
+          <tr>
+            <td>{{ c.objeto or "não informado" }}</td>
+            <td>{{ c.valor|moeda }}</td>
+            <td>{{ c.fim_vigencia or "-" }}</td>
+            <td>{{ (c.anos_desde_vigencia ~ " anos") if c.anos_desde_vigencia is not none else "-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+    {% if conv.suspensas_total %}
+    <p class="dica"><strong>Ressalva:</strong> {{ conv.suspensas_total }} convênio(s)
+    com <em>inadimplência suspensa</em> - pendência cuja exigibilidade está suspensa (em geral por
+    decisão judicial ou acordo). Não trava repasses como a inadimplência ativa, mas merece verificação.</p>
+    {% endif %}
+    <h4 class="subtitulo">Convênios mais recentes</h4>
+    <table>
+      <thead><tr><th>Objeto</th><th style="width:150px">Situação</th><th style="width:130px">Valor</th><th style="width:110px">Fim vigência</th></tr></thead>
+      <tbody>
+        {% for c in conv.recentes %}
+        <tr class="{{ 'linha-alerta' if 'inadimpl' in (c.situacao or '')|lower }}">
+          <td>{{ c.objeto or "-" }}</td>
+          <td>{{ c.situacao or "-" }}</td>
+          <td>{{ c.valor|moeda }}</td>
+          <td>{{ c.fim_vigencia or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% elif conv and conv.observacao %}
+    <p class="dica">{{ conv.observacao }}</p>
+  {% else %}
+    <p class="dica indisponivel">{{ d.convenios.erro if d.convenios else "não consultado" }}</p>
+  {% endif %}
+</div>
+
+<!-- ===== Sanções (dentro do bloco de restrições) ===== -->
+<div class="cartao">
+  <h4 class="subtitulo" style="margin-top:0">Sanções (CEIS / CNEP / CEPIM)</h4>
+  {% if sanc %}
+    {% set total_sancoes = (sanc.ceis_total or 0) + (sanc.cnep_total or 0) + (sanc.cepim_total or 0) %}
+    {% if total_sancoes == 0 %}
+      <p class="ok-verde">✓ Nenhuma sanção ativa encontrada para o CNPJ consultado.</p>
+    {% else %}
+      <div class="aviso-erro"><strong>{{ total_sancoes }} registro(s) de sanção encontrados.</strong></div>
+      <table>
+        <thead><tr><th style="width:80px">Cadastro</th><th>Tipo / motivo</th><th style="width:200px">Órgão</th><th style="width:170px">Vigência</th></tr></thead>
+        <tbody>
+          {% for cadastro, lista in [("CEIS", sanc.ceis), ("CNEP", sanc.cnep), ("CEPIM", sanc.cepim)] %}
+            {% for s in lista %}
+            <tr>
+              <td>{{ cadastro }}</td>
+              <td>{{ s.tipo or s.motivo or "-" }}{% if s.valor_multa %} - multa {{ s.valor_multa }}{% endif %}</td>
+              <td>{{ s.orgao or "-" }}</td>
+              <td>{{ s.inicio or "-" }}{% if s.fim %} a {{ s.fim }}{% endif %}</td>
+            </tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  {% else %}
+    <p class="dica indisponivel">{{ d.transparencia.erro if d.transparencia else "não consultado" }}</p>
+  {% endif %}
+</div>
+
+<!-- ===== Compras públicas ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Compras públicas (PNCP)</h3>
+  {% if pncp %}
+    <p class="dica">
+      {{ pncp.total_contratos|numero }} contratos publicados nos {{ pncp.periodo }};
+      {{ pncp.valor_total_contratado|moeda }} na amostra de {{ pncp.contratos_analisados|numero }} analisados
+      {%- if pncp.duplicatas_removidas %} ({{ pncp.duplicatas_removidas }} duplicatas removidas){% endif %}.
+      {% if pncp.amostra_parcial %}<em>Amostra parcial - a API limita o volume por consulta.</em>{% endif %}
+    </p>
+    {% if pncp.coleta_incompleta %}
+    <div class="aviso-erro">
+      <strong>Coleta incompleta.</strong> O PNCP falhou em parte das consultas, então os números
+      abaixo cobrem menos contratos do que existem. É instabilidade do serviço deles, não erro dos
+      dados - refazer a análise mais tarde costuma trazer o restante.
+      <br><span class="dica">{{ pncp.falhas_coleta | join("; ") }}</span>
+    </div>
+    {% endif %}
+    <p class="dica"><strong>Esta seção não pontua no score.</strong> Serve como inteligência
+    comercial: contrato assinado não é pagamento efetuado, e a classificação por texto do objeto
+    é aproximada.</p>
+
+    <h4 class="subtitulo">Concorrência em climatização</h4>
+    {% if pncp.climatizacao_por_fornecedor %}
+      <p class="dica">Quem já vendeu equipamento de clima para este ente, quanto e quando:
+      {{ pncp.climatizacao_total_contratos }} contratos somando
+      {{ pncp.climatizacao_valor_total|moeda }}.</p>
+      <table>
+        <thead><tr><th>Fornecedor</th><th style="width:110px">Contratos</th><th style="width:150px">Valor total</th><th style="width:130px">Último</th></tr></thead>
+        <tbody>
+          {% for f in pncp.climatizacao_por_fornecedor %}
+          <tr>
+            <td>{{ f.fornecedor }}</td><td>{{ f.contratos }}</td>
+            <td>{{ f.valor_total|moeda }}</td><td>{{ f.ultimo or "-" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+
+      <h4 class="subtitulo">Maiores contratos de climatização</h4>
+      <p class="dica">A coluna <em>termo</em> mostra o que classificou cada contrato, para você
+      conferir se o enquadramento faz sentido.</p>
+      <table>
+        <thead><tr><th>Objeto</th><th style="width:120px">Termo</th><th style="width:200px">Fornecedor</th><th style="width:110px">Valor</th></tr></thead>
+        <tbody>
+          {% for c in pncp.contratos_climatizacao %}
+          <tr>
+            <td>{{ c.objeto }}</td><td class="dica">{{ c.termo_identificado }}</td>
+            <td>{{ c.fornecedor or "-" }}</td><td>{{ c.valor_global|moeda }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="dica">Nenhum contrato de climatização identificado no período.</p>
+    {% endif %}
+
+    <h4 class="subtitulo">Maiores contratos do período</h4>
+    <table>
+      <thead><tr><th>Objeto</th><th style="width:230px">Fornecedor</th><th style="width:120px">Valor</th><th style="width:100px">Assinatura</th></tr></thead>
+      <tbody>
+        {% for c in pncp.maiores_contratos %}
+        <tr>
+          <td>{{ c.objeto }}</td><td>{{ c.fornecedor or "-" }}</td>
+          <td>{{ c.valor_global|moeda }}</td><td>{{ c.assinatura or "-" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="dica indisponivel">{{ d.pncp.erro if d.pncp else "não consultado" }}</p>
+  {% endif %}
+</div>
+
+<!-- ===== Detalhamento fiscal ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Detalhamento fiscal</h3>
+  {% if rgf %}
+  <p class="dica">Valores absolutos por trás dos percentuais mostrados acima ({{ rgf.referencia }}).</p>
+  <table>
+    <tbody>
+      <tr><td>Receita Corrente Líquida ajustada</td><td>{{ rgf.rcl_ajustada|moeda }}</td></tr>
+      <tr><td>Despesa total com pessoal</td><td>{{ rgf.pessoal_valor|moeda }}</td></tr>
+      <tr><td>Dívida consolidada líquida</td><td>{{ rgf.dcl_valor|moeda }}
+        {%- if rgf.dcl_pct_rcl is number and rgf.dcl_pct_rcl < 0 %}
+        <span class="dica">(negativa: ativo financeiro supera a dívida)</span>{% endif %}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+    <p class="dica indisponivel">{{ d.siconfi.erro if d.siconfi else "não consultado" }}</p>
+  {% endif %}
+
+  {% if capag %}
+  <h4 class="subtitulo">Composição da nota CAPAG</h4>
+  <table>
+    <thead><tr><th>Indicador</th><th style="width:100px">Nota</th></tr></thead>
+    <tbody>
+      <tr><td>Endividamento (dívida / RCL)</td><td>{{ capag.nota_endividamento or "-" }}</td></tr>
+      <tr><td>Poupança corrente (despesa / receita corrente)</td><td>{{ capag.nota_poupanca_corrente or "-" }}</td></tr>
+      <tr><td>Liquidez (obrigações / disponibilidade de caixa)</td><td>{{ capag.nota_liquidez or "-" }}</td></tr>
+      <tr><td><strong>Classificação final</strong></td><td><strong>{{ capag.nota_capag or "-" }}</strong></td></tr>
+    </tbody>
+  </table>
+  {% endif %}
+</div>
+
+<!-- ===== Cadastro e observações manuais ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Cadastro e verificações manuais</h3>
+  {% if cad %}
+  <table>
+    <tbody>
+      <tr><td>Razão social</td><td>{{ cad.razao_social or "-" }}</td></tr>
+      <tr><td>Situação cadastral</td>
+          <td class="{{ 'destaque-bom' if cad.situacao_cadastral == 'ATIVA' else 'destaque-ruim' }}">{{ cad.situacao_cadastral or "-" }}</td></tr>
+      <tr><td>Natureza jurídica</td><td>{{ cad.natureza_juridica or "-" }}</td></tr>
+      <tr><td>Início de atividade</td><td>{{ cad.data_inicio_atividade or "-" }}</td></tr>
+    </tbody>
+  </table>
+  {% else %}
+    <p class="dica indisponivel">{{ d.cnpj.erro if d.cnpj else "não consultado" }}</p>
+  {% endif %}
+
+  <h4 class="subtitulo">Serasa (consulta manual)</h4>
+  {% if obs and obs.serasa %}<p class="texto-manual">{{ obs.serasa }}</p>
+  {% else %}<p class="dica indisponivel">Não informado pelo analista. Serasa não possui API pública - a consulta é manual.</p>{% endif %}
+
+  <h4 class="subtitulo">CAUC (consulta manual)</h4>
+  {% set cauc_sit = (obs.cauc_situacao if obs else none) or "nao_consultado" %}
+  {% if cauc_sit == "com_pendencias" %}
+    <p class="destaque-ruim" style="margin:0">⚠ Com pendências - o ente pode estar impedido de
+    receber transferências voluntárias da União.</p>
+  {% elif cauc_sit == "sem_pendencias" %}
+    <p class="ok-verde">✓ Sem pendências no CAUC na data da consulta.</p>
+  {% else %}
+    <p class="dica indisponivel">Não consultado. Verifique em
+    <a href="https://cauc.tesouro.gov.br/" target="_blank" rel="noopener">cauc.tesouro.gov.br</a> -
+    é a fonte autoritativa sobre impedimento de transferências.</p>
+  {% endif %}
+  {% if obs and obs.cauc %}<p class="texto-manual">{{ obs.cauc }}</p>{% endif %}
+</div>
+
+<!-- ===== Fontes ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Fontes e datas de referência</h3>
+  <table>
+    <thead><tr><th style="width:180px">Fonte</th><th style="width:90px">Status</th><th>Referência</th></tr></thead>
+    <tbody>
+      {% for chave, rotulo in [
+        ("pagamentos", "SICONFI - caixa e restos a pagar"), ("capag", "CAPAG - Tesouro Nacional"),
+        ("siconfi", "SICONFI - RGF/RREO"),
+        ("transferencias", "Portal da Transparência - repasses"), ("convenios", "Portal da Transparência - convênios"),
+        ("transparencia", "Portal da Transparência - sanções"), ("pncp", "PNCP - contratos"),
+        ("cnpj", "Receita Federal (BrasilAPI)"), ("ibge", "IBGE - população e PIB")] %}
+      {% set f = d[chave] if chave in d else None %}
+      <tr>
+        <td>{{ rotulo }}</td>
+        <td>{% if f and f.ok %}<span class="tag-ok">coletado</span>{% else %}<span class="tag-falha">sem dado</span>{% endif %}</td>
+        <td class="dica">
+          {% if f and f.ok %}
+            {% if chave == "capag" %}{{ f.dados.referencia }}
+            {% elif chave == "siconfi" %}{{ (f.dados.rgf.referencia if f.dados.rgf else "") }}{{ " · " ~ f.dados.rreo_orcamento.referencia if f.dados.rreo_orcamento else "" }}
+            {% elif chave == "ibge" %}população {{ f.dados.ano_populacao }} · PIB {{ f.dados.ano_pib }}
+            {% elif chave == "pagamentos" %}
+              {%- set anos = f.dados.caixa_por_ano | map(attribute="ano") | list -%}
+              {{ "caixa: " ~ anos | join(", ") if anos else "" }}
+              {{- " · restos a pagar: " ~ f.dados.restos_a_pagar_por_ano[0].referencia if f.dados.restos_a_pagar_por_ano else "" }}
+            {% elif chave in ("pncp", "transferencias") %}{{ f.dados.periodo }}
+            {% else %}consultado em {{ analise.criado_em[:10] }}{% endif %}
+          {% else %}{{ f.erro if f else "não consultado" }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="nao-imprimir" style="margin-bottom:2rem">
+  <button class="principal" onclick="window.print()">🖨️ Salvar em PDF / Imprimir</button>
+  <a href="/" style="margin-left:1rem">Nova análise</a>
+  <a href="/historico" style="margin-left:1rem">Histórico</a>
+</div>
+
+</div><!-- /coluna-analise -->
+
+<!-- ===== Coluna direita: dossiê + chat ===== -->
+<aside class="coluna-dossie nao-imprimir">
+  <div class="abas">
+    <button class="aba ativa" data-alvo="painel-dossie">Dossiê de Análise</button>
+    <button class="aba" data-alvo="painel-chat">Perguntar à IA</button>
+  </div>
+
+  <div id="painel-dossie" class="painel-conteudo dossie">
+    {% if dossie_html %}{{ dossie_html | safe }}
+    {% else %}
+      <p><em>Dossiê textual não gerado. Os dados coletados e o scorecard à esquerda permanecem
+      válidos - você ainda pode perguntar à IA na aba ao lado.</em></p>
+    {% endif %}
+  </div>
+
+  <div id="painel-chat" class="painel-conteudo oculto">
+    <div class="chat">
+      <div class="chat-mensagens" id="chat-mensagens">
+        {% if mensagens %}
+          {% for m in mensagens %}
+          <div class="msg {{ m.papel }}" data-bruto="{{ m.conteudo }}">
+            {%- if m.papel == "user" -%}
+              {{ m.conteudo }}
+              {%- if m.autor %}<span class="msg-autor">{{ m.autor }}</span>{% endif -%}
+            {%- endif -%}
+          </div>
+          {% endfor %}
+        {% else %}
+        <p class="chat-vazio">Pergunte qualquer coisa sobre esta análise. A IA responde com base
+        no dossiê, no scorecard e nos dados coletados - e diz quando algo não está nos dados.
+        As perguntas ficam salvas e visíveis para toda a equipe.</p>
+        <div class="sugestoes-chat">
+          <span class="sugestao">Como está o risco de crédito deste ente?</span>
+          <span class="sugestao">Qual o maior risco para receber o pagamento?</span>
+          <span class="sugestao">Quem são os concorrentes em climatização aqui?</span>
+          <span class="sugestao">Que garantias eu deveria pedir?</span>
+        </div>
+        {% endif %}
+      </div>
+      <div class="chat-entrada">
+        <textarea id="chat-texto" placeholder="Escreva sua pergunta e pressione Enter..." rows="1"></textarea>
+        <button id="chat-enviar" type="button">Enviar</button>
+      </div>
+    </div>
+  </div>
+</aside>
+</div><!-- /painel -->
+
+<!-- versão impressa do dossiê: a coluna lateral é oculta na impressão -->
+<div class="dossie somente-impressao">{% if dossie_html %}{{ dossie_html | safe }}{% endif %}</div>
+
+<script>
+(() => {
+  const analiseId = {{ analise.id }};
+
+  document.querySelectorAll(".aba").forEach(aba => {
+    aba.onclick = () => {
+      document.querySelectorAll(".aba").forEach(a => a.classList.remove("ativa"));
+      document.querySelectorAll(".painel-conteudo").forEach(p => p.classList.add("oculto"));
+      aba.classList.add("ativa");
+      document.getElementById(aba.dataset.alvo).classList.remove("oculto");
+    };
+  });
+
+  const caixa = document.getElementById("chat-mensagens");
+  const texto = document.getElementById("chat-texto");
+  const botao = document.getElementById("chat-enviar");
+
+  // Formatação mínima de markdown. O HTML é escapado ANTES de aplicar a
+  // marcação, então nada que o modelo escreva pode virar tag executável.
+  function formatar(texto) {
+    const escapado = texto
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return escapado
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/^\s*[-*]\s+(.*)$/gm, "<li>$1</li>")
+      .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>")
+      .replace(/\n{2,}/g, "</p><p>")
+      .replace(/\n/g, "<br>")
+      .replace(/^/, "<p>").replace(/$/, "</p>")
+      .replace(/<p>(\s*<ul>)/g, "$1").replace(/(<\/ul>\s*)<\/p>/g, "$1");
+  }
+
+  function adicionar(papel, conteudo, comFormatacao = true) {
+    const vazio = caixa.querySelector(".chat-vazio");
+    if (vazio) { vazio.remove(); caixa.querySelector(".sugestoes-chat")?.remove(); }
+    const div = document.createElement("div");
+    div.className = "msg " + papel;
+    if (comFormatacao) div.innerHTML = formatar(conteudo);
+    else div.textContent = conteudo;
+    caixa.appendChild(div);
+    caixa.scrollTop = caixa.scrollHeight;
+    return div;
+  }
+
+  function preencher(div, conteudo) {
+    div.innerHTML = formatar(conteudo);
+    caixa.scrollTop = caixa.scrollHeight;
+  }
+
+  async function enviar(pergunta) {
+    if (!pergunta.trim()) return;
+    adicionar("user", pergunta, false);  // a pergunta é do usuário: texto puro
+    texto.value = "";
+    botao.disabled = true;
+    const pensando = adicionar("assistant", "Pensando...", false);
+    try {
+      // o histórico é mantido no servidor; aqui vai só a pergunta nova
+      const resp = await fetch(`/api/chat/${analiseId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pergunta }),
+      });
+      const dados = await resp.json();
+      if (!resp.ok) throw new Error(dados.erro || `HTTP ${resp.status}`);
+      preencher(pensando, dados.resposta);
+    } catch (e) {
+      pensando.className = "msg erro";
+      pensando.textContent = "Não consegui responder: " + e.message;
+    } finally {
+      botao.disabled = false;
+      texto.focus();
+    }
+  }
+
+  // formata as respostas já salvas que vieram renderizadas do servidor
+  caixa.querySelectorAll(".msg.assistant[data-bruto]").forEach(div => {
+    preencher(div, div.dataset.bruto);
+  });
+
+  botao.onclick = () => enviar(texto.value);
+  texto.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(texto.value); }
+  });
+  document.querySelectorAll(".sugestao").forEach(s => {
+    s.onclick = () => {
+      document.querySelector('.aba[data-alvo="painel-chat"]').click();
+      enviar(s.textContent);
+    };
+  });
+})();
+</script>
+{% endblock %}

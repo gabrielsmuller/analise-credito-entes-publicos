@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulo %}Análise de Crédito - Entes Públicos{% endblock %}</title>
+  <style>
+    :root {
+      --azul: #1a3a5c; --azul-claro: #2e5f8a; --fundo: #f4f6f9; --borda: #d8dee6;
+      --verde: #1e7e34; --amarelo: #b8860b; --vermelho: #b02a37; --cinza: #6c757d;
+      --altura-topo: 53px;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--fundo); color: #222; }
+    header.topo { background: var(--azul); color: #fff; padding: 0.9rem 1.5rem; display: flex;
+                  align-items: center; gap: 2rem;
+                  position: sticky; top: 0; z-index: 50; box-shadow: 0 1px 6px rgba(0,0,0,0.18); }
+    header.topo h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header.topo nav a { color: #cfe0f0; text-decoration: none; margin-right: 1.2rem; font-size: 0.95rem; }
+    header.topo nav a:hover { color: #fff; }
+    main { max-width: 960px; margin: 2rem auto; padding: 0 1.2rem; }
+    .cartao { background: #fff; border: 1px solid var(--borda); border-radius: 10px; padding: 1.5rem; margin-bottom: 1.2rem; }
+    label { display: block; font-weight: 600; margin: 0.9rem 0 0.3rem; font-size: 0.92rem; }
+    input[type=text], textarea { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--borda); border-radius: 6px; font: inherit; }
+    textarea { min-height: 90px; resize: vertical; }
+    button.principal { background: var(--azul-claro); color: #fff; border: 0; border-radius: 6px; padding: 0.7rem 1.6rem; font: inherit; font-weight: 600; cursor: pointer; margin-top: 1.2rem; }
+    button.principal:hover { background: var(--azul); }
+    .semaforo { display: inline-block; padding: 0.25rem 0.9rem; border-radius: 999px; color: #fff; font-weight: 700; text-transform: uppercase; font-size: 0.85rem; }
+    .semaforo.verde { background: var(--verde); } .semaforo.amarelo { background: var(--amarelo); }
+    .semaforo.vermelho { background: var(--vermelho); } .semaforo.indefinido { background: var(--cinza); }
+    table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+    th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--borda); }
+    th { background: #eef2f7; }
+    .dica { color: var(--cinza); font-size: 0.85rem; }
+    .lista-sugestoes { list-style: none; margin: 0.2rem 0 0; padding: 0; border: 1px solid var(--borda); border-radius: 6px; background: #fff; max-height: 260px; overflow-y: auto; }
+    .lista-sugestoes li { padding: 0.5rem 0.7rem; cursor: pointer; }
+    .lista-sugestoes li:hover { background: #eef4fb; }
+    .indicador-carregando { display: none; margin-top: 1rem; color: var(--azul-claro); font-weight: 600; }
+    .htmx-request .indicador-carregando, .htmx-request.indicador-carregando { display: block; }
+    .dossie h1 { font-size: 1.5rem; color: var(--azul); } .dossie h2 { font-size: 1.15rem; color: var(--azul-claro); margin-top: 1.6rem; }
+    .aviso-erro { background: #fdecea; border: 1px solid #f5c6cb; color: #842029; padding: 0.8rem 1rem; border-radius: 8px; margin-bottom: 1rem; }
+
+    /* --- dossiê: cabeçalho e seções --- */
+    .cabecalho-dossie { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; }
+    .score-numero { font-size: 2.2rem; font-weight: 700; color: var(--azul); line-height: 1.1; }
+    .score-max { font-size: 1rem; color: var(--cinza); font-weight: 400; }
+    .titulo-secao { margin: 0 0 1rem; font-size: 1.05rem; color: var(--azul); border-bottom: 2px solid var(--borda); padding-bottom: 0.5rem; }
+    .subtitulo { font-size: 0.95rem; color: var(--azul-claro); margin: 1.4rem 0 0.5rem; }
+    .titulo-evidencias { margin: 2.2rem 0 1rem; color: var(--azul); font-size: 1.2rem; border-bottom: 3px solid var(--azul-claro); padding-bottom: 0.4rem; }
+    .indisponivel { font-style: italic; }
+    .ok-verde { color: var(--verde); font-weight: 600; margin: 0; }
+    .destaque-bom { color: var(--verde); font-weight: 600; }
+    .destaque-ruim { color: var(--vermelho); font-weight: 600; }
+    .linha-sem-dado { background: #fafbfc; color: var(--cinza); }
+    .linha-alerta { background: #fdecea; }
+    .texto-manual { background: #f7f9fc; border-left: 3px solid var(--azul-claro); padding: 0.7rem 1rem; margin: 0.3rem 0 0; white-space: pre-wrap; font-size: 0.92rem; }
+    .tag-ok { background: #d4edda; color: #14532d; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }
+    .tag-falha { background: #eceff2; color: var(--cinza); padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }
+
+    /* --- cards de indicadores --- */
+    .grade-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0.8rem; }
+    .card-indicador { background: #f7f9fc; border: 1px solid var(--borda); border-radius: 8px; padding: 0.8rem 0.9rem; display: flex; flex-direction: column; gap: 0.25rem; }
+    .card-indicador.destacado { background: #eef4fb; border-color: var(--azul-claro); }
+    .card-rotulo { font-size: 0.78rem; color: var(--cinza); text-transform: uppercase; letter-spacing: 0.03em; font-weight: 600; }
+    .card-valor { font-size: 1.35rem; font-weight: 700; color: var(--azul); }
+    .card-nota { font-size: 0.78rem; color: var(--cinza); }
+
+    /* --- medidores de limite legal --- */
+    .grade-medidores { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-top: 1.5rem; }
+    .medidor-cabecalho { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.9rem; margin-bottom: 0.35rem; }
+    .medidor-trilha { position: relative; height: 20px; background: #e9edf2; border-radius: 4px; overflow: hidden; }
+    .medidor-preenchimento { height: 100%; border-radius: 4px; }
+    .medidor-preenchimento.risco-baixo { background: var(--verde); }
+    .medidor-preenchimento.risco-medio { background: var(--amarelo); }
+    .medidor-preenchimento.risco-alto { background: var(--vermelho); }
+    .medidor-marca { position: absolute; top: 0; bottom: 0; width: 2px; background: #444; opacity: 0.55; }
+    .medidor .dica { display: block; margin-top: 0.3rem; }
+
+    /* --- gráfico de barras dos repasses --- */
+    .grafico-barras { display: flex; align-items: flex-end; gap: 3px; height: 150px; padding: 0.5rem 0; border-bottom: 1px solid var(--borda); }
+    .barra-coluna { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+    .barra { width: 100%; min-height: 2px; background: var(--azul-claro); border-radius: 2px 2px 0 0; }
+    .barra-coluna:hover .barra { background: var(--azul); }
+    .barra-rotulo { font-size: 0.62rem; color: var(--cinza); margin-top: 0.2rem; }
+
+    /* --- layout de duas colunas do dossiê --- */
+    .painel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 460px); gap: 1.2rem;
+              max-width: 1560px; margin: 1.2rem auto; padding: 0 1.2rem; align-items: start; }
+    .coluna-analise { min-width: 0; }
+    /* desconta a barra fixa para a coluna não deslizar por baixo dela */
+    .coluna-dossie { position: sticky; top: calc(var(--altura-topo) + 0.8rem);
+                     max-height: calc(100vh - var(--altura-topo) - 1.6rem);
+                     display: flex; flex-direction: column; gap: 0.8rem; }
+    .abas { display: flex; gap: 0.3rem; border-bottom: 2px solid var(--borda); }
+    .aba { padding: 0.5rem 1rem; cursor: pointer; border: 0; background: none; font: inherit;
+           font-weight: 600; color: var(--cinza); border-bottom: 3px solid transparent; margin-bottom: -2px; }
+    .aba.ativa { color: var(--azul); border-bottom-color: var(--azul-claro); }
+    .painel-conteudo { flex: 1; overflow-y: auto; background: #fff; border: 1px solid var(--borda);
+                       border-radius: 10px; padding: 1.1rem; }
+    .painel-conteudo.oculto { display: none; }
+
+    /* --- chat --- */
+    .chat { display: flex; flex-direction: column; height: 100%; }
+    .chat-mensagens { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.7rem;
+                      padding-right: 0.3rem; }
+    .msg { padding: 0.6rem 0.8rem; border-radius: 10px; font-size: 0.9rem; line-height: 1.45; max-width: 92%; }
+    .msg.user { background: var(--azul-claro); color: #fff; align-self: flex-end; border-bottom-right-radius: 3px; }
+    .msg.assistant { background: #eef2f7; align-self: flex-start; border-bottom-left-radius: 3px; }
+    .msg.erro { background: #fdecea; color: #842029; align-self: stretch; }
+    .msg p { margin: 0 0 0.6rem; } .msg p:last-child { margin-bottom: 0; }
+    .msg strong { font-weight: 700; }
+    .msg ul { margin: 0.3rem 0; padding-left: 1.2rem; }
+    .msg li { margin-bottom: 0.2rem; }
+    .msg code { background: rgba(0,0,0,0.07); padding: 0.05rem 0.3rem; border-radius: 3px;
+                font-size: 0.86em; }
+    .msg.user code { background: rgba(255,255,255,0.22); }
+    .msg table { font-size: 0.85rem; margin: 0.4rem 0; }
+    .msg-autor { display: block; font-size: 0.7rem; opacity: 0.75; margin-top: 0.25rem; }
+    .chat-entrada { display: flex; gap: 0.4rem; margin-top: 0.7rem; }
+    .chat-entrada textarea { flex: 1; min-height: 44px; max-height: 130px; font-size: 0.9rem; }
+    .chat-entrada button { background: var(--azul-claro); color: #fff; border: 0; border-radius: 6px;
+                           padding: 0 1rem; font: inherit; font-weight: 600; cursor: pointer; }
+    .chat-entrada button:disabled { background: var(--cinza); cursor: not-allowed; }
+    .chat-vazio { color: var(--cinza); font-size: 0.88rem; }
+    .sugestoes-chat { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.6rem; }
+    .sugestao { background: #eef4fb; border: 1px solid var(--borda); border-radius: 999px;
+                padding: 0.3rem 0.7rem; font-size: 0.8rem; cursor: pointer; color: var(--azul); }
+    .sugestao:hover { background: #dce9f7; }
+
+    /* --- medidor circular do score --- */
+    .score-anel { display: flex; align-items: center; gap: 1rem; }
+    .anel-texto { font-size: 1.6rem; font-weight: 700; }
+
+    /* --- blocos de subscore --- */
+    .grade-blocos { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.7rem; }
+    .bloco-card { border: 1px solid var(--borda); border-radius: 8px; padding: 0.7rem 0.85rem; background: #fff; }
+    .bloco-nome { font-size: 0.8rem; font-weight: 600; color: var(--cinza); text-transform: uppercase;
+                  letter-spacing: 0.02em; }
+    .bloco-pontos { font-size: 1.2rem; font-weight: 700; color: var(--azul); margin: 0.15rem 0 0.35rem; }
+    .bloco-trilha { height: 7px; background: #e9edf2; border-radius: 4px; overflow: hidden; }
+    .bloco-preenchimento { height: 100%; border-radius: 4px; }
+    .pill { display: inline-block; padding: 0.12rem 0.5rem; border-radius: 999px; font-size: 0.72rem;
+            font-weight: 700; text-transform: uppercase; letter-spacing: 0.02em; }
+    .pill.bom { background: #d4edda; color: #14532d; }
+    .pill.medio { background: #fff3cd; color: #7a5c00; }
+    .pill.ruim { background: #f8d7da; color: #842029; }
+    .pill.neutro { background: #eceff2; color: var(--cinza); }
+
+    @media (max-width: 1100px) {
+      .painel { grid-template-columns: 1fr; }
+      .coluna-dossie { position: static; max-height: none; }
+      .painel-conteudo { max-height: 70vh; }
+    }
+    /* âncoras não podem parar embaixo da barra fixa */
+    :target { scroll-margin-top: calc(var(--altura-topo) + 0.8rem); }
+    .somente-impressao { display: none; }
+    @media print {
+      header.topo, .nao-imprimir { display: none !important; }
+      .painel { display: block; max-width: 100%; padding: 0; margin: 0; }
+      .somente-impressao { display: block; }
+      body { background: #fff; font-size: 11pt; }
+      main { max-width: 100%; margin: 0; padding: 0; }
+      .cartao { border: 0; border-top: 1px solid var(--borda); border-radius: 0; padding: 0.6rem 0 0; margin-bottom: 0.8rem; break-inside: avoid; }
+      .card-indicador, .grafico-barras, table { break-inside: avoid; }
+      .titulo-evidencias, .titulo-secao { break-after: avoid; }
+      .grade-cards { grid-template-columns: repeat(3, 1fr); }
+      /* impressoras costumam suprimir cores de fundo: garante os gráficos no PDF */
+      .barra, .medidor-preenchimento, .medidor-trilha, .semaforo, .card-indicador,
+      .tag-ok, .tag-falha, .aviso-erro, .linha-alerta, .texto-manual {
+        -webkit-print-color-adjust: exact; print-color-adjust: exact;
+      }
+      a { text-decoration: none; color: inherit; }
+    }
+  </style>
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="topo">
+    <h1>Análise de Crédito - Entes Públicos</h1>
+    <nav>
+      <a href="/">Nova análise</a>
+      <a href="/historico">Histórico</a>
+    </nav>
+  </header>
+  {% block corpo %}<main>{% block conteudo %}{% endblock %}</main>{% endblock %}
+</body>
+</html>

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block titulo %}Histórico de análises{% endblock %}
+{% block conteudo %}
+<div class="cartao">
+  <h2 style="margin-top:0">Histórico de análises</h2>
+  {% if analises %}
+  <table>
+    <thead><tr><th>#</th><th>Data</th><th>Município</th><th>Score</th><th>Semáforo</th><th></th></tr></thead>
+    <tbody>
+      {% for a in analises %}
+      <tr>
+        <td>{{ a.id }}</td>
+        <td>{{ a.criado_em }}</td>
+        <td>{{ a.municipio }}/{{ a.uf }}</td>
+        <td>{{ a.score if a.score is not none else "-" }}</td>
+        <td><span class="semaforo {{ a.semaforo }}">{{ a.semaforo }}</span></td>
+        <td><a href="/dossie/{{ a.id }}">abrir dossiê</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="dica">Nenhuma análise realizada ainda. <a href="/">Fazer a primeira</a>.</p>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block conteudo %}
+<div class="cartao">
+  <h2 style="margin-top:0">Nova análise de crédito</h2>
+  <p class="dica">Digite o município. O CNPJ da prefeitura é resolvido automaticamente pelo registro
+  oficial do Tesouro, e os dados públicos (caixa, restos a pagar, CAPAG, SICONFI, convênios, PNCP)
+  são coletados em seguida. Serasa e CAUC são consultas manuais.</p>
+
+  <form id="form-analise" hx-post="/analisar" hx-indicator="#carregando">
+    <label for="busca-municipio">Município *</label>
+    <input type="text" id="busca-municipio" placeholder="ex.: Blumenau" autocomplete="off"
+           hx-get="/api/municipios" hx-trigger="input changed delay:300ms" hx-target="#sugestoes"
+           hx-vals='js:{q: document.getElementById("busca-municipio").value}' hx-swap="none">
+    <ul id="sugestoes" class="lista-sugestoes" style="display:none"></ul>
+    <div id="selecionado" class="dica" style="margin-top:0.4rem"></div>
+    <input type="hidden" name="cod_ibge" id="cod_ibge" required>
+    <input type="hidden" name="municipio" id="municipio">
+    <input type="hidden" name="uf" id="uf">
+
+    <label for="serasa">Resultado da consulta Serasa (manual, opcional)</label>
+    <textarea id="serasa" name="serasa" placeholder="Cole aqui o resumo da consulta feita no Serasa (score, pendências, protestos...)"></textarea>
+
+    <label for="cauc_situacao">Situação no CAUC (manual)</label>
+    <select id="cauc_situacao" name="cauc_situacao">
+      <option value="nao_consultado">Não consultado</option>
+      <option value="sem_pendencias">Sem pendências</option>
+      <option value="com_pendencias">Com pendências</option>
+    </select>
+    <p class="dica">O CAUC não tem API pública. Consulte em
+      <a href="https://cauc.tesouro.gov.br/" target="_blank" rel="noopener">cauc.tesouro.gov.br</a>
+      - é a fonte que diz se o ente está impedido de receber transferências da União,
+      e pendências aqui impedem o semáforo verde.</p>
+
+    <label for="cauc">Detalhe do CAUC (opcional)</label>
+    <textarea id="cauc" name="cauc" placeholder="Cole aqui as pendências encontradas, se houver"></textarea>
+
+    <button type="submit" class="principal">Gerar dossiê</button>
+    <div id="carregando" class="indicador-carregando">
+      ⏳ Coletando dados públicos e redigindo o dossiê... isso leva de 1 a 3 minutos. Não feche a página.
+    </div>
+  </form>
+</div>
+
+<script>
+  // Autocomplete: interceptamos a resposta JSON do endpoint /api/municipios
+  document.body.addEventListener("htmx:beforeSwap", function (evt) {
+    if (!evt.detail.xhr.responseURL.includes("/api/municipios")) return;
+    evt.detail.shouldSwap = false;
+    const lista = document.getElementById("sugestoes");
+    let municipios = [];
+    try { municipios = JSON.parse(evt.detail.xhr.responseText); } catch (e) {}
+    lista.innerHTML = "";
+    lista.style.display = municipios.length ? "block" : "none";
+    for (const m of municipios) {
+      const li = document.createElement("li");
+      li.textContent = `${m.nome} - ${m.uf}`;
+      li.onclick = () => {
+        document.getElementById("cod_ibge").value = m.cod_ibge;
+        document.getElementById("municipio").value = m.nome;
+        document.getElementById("uf").value = m.uf;
+        document.getElementById("busca-municipio").value = `${m.nome} - ${m.uf}`;
+        const cnpjFmt = m.cnpj
+          ? m.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")
+          : null;
+        document.getElementById("selecionado").innerHTML = cnpjFmt
+          ? `✓ <strong>${m.nome}/${m.uf}</strong> - IBGE ${m.cod_ibge} - CNPJ da prefeitura <strong>${cnpjFmt}</strong> (Tesouro Nacional)`
+          : `✓ <strong>${m.nome}/${m.uf}</strong> - IBGE ${m.cod_ibge}`;
+        lista.style.display = "none";
+      };
+      lista.appendChild(li);
+    }
+  });
+  document.getElementById("form-analise").addEventListener("submit", function (evt) {
+    if (!document.getElementById("cod_ibge").value) {
+      evt.preventDefault();
+      alert("Selecione um município na lista de sugestões.");
+    }
+  });
+</script>
+{% endblock %}
