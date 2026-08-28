@@ -65,6 +65,11 @@ Para ver quais modelos a sua chave OpenAI acessa: `.\.venv\Scripts\python listar
 Abra http://127.0.0.1:8000 — digite o município, selecione na lista e clique em **Gerar dossiê**.
 A análise leva de 1 a 5 minutos.
 
+> Para acessar de outras máquinas na rede local, troque `--host 127.0.0.1` por `--host 0.0.0.0` e
+> **defina `APP_SENHA`** no `.env`. Sem senha o app não exige login — só aceitável em `127.0.0.1`;
+> exposto na rede sem senha, qualquer máquina abriria os dossiês e dispararia análises (que
+> consomem crédito de IA).
+
 O **CNPJ da prefeitura é resolvido automaticamente** pelo registro do Tesouro, não digitado.
 Isso não é só conveniência: um CNPJ digitado errado não falha, apenas traz dados de outra
 entidade — e a análise cobre apenas municípios (não universidades ou autarquias).
@@ -159,17 +164,6 @@ powershell -ExecutionPolicy Bypass -File deploy\deploy-lambda.ps1
 
 Ajuste `AWS_PROFILE`, `AWS_REGION` e `FUNCTION_NAME` por variável de ambiente se os padrões não
 baterem com a sua conta.
-
-## Rodar em rede local (alternativa, sem AWS)
-
-Para uso interno numa LAN, suba o uvicorn escutando na rede e **defina uma senha**:
-
-```powershell
-.\.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Sem `APP_SENHA` o app não exige login — só aceitável em `127.0.0.1`. Exposto na rede sem senha,
-qualquer máquina abriria os dossiês e dispararia análises, que consomem crédito de IA.
 
 ## Backup
 
