@@ -46,7 +46,9 @@ class AutenticacaoBasica(BaseHTTPMiddleware):
         if usuario is None:
             return Response(
                 status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="Análise de Crédito"'},
+                # o valor do cabeçalho precisa ser ASCII (RFC 7230): sem acento no
+                # realm. É só o rótulo do popup de login do navegador.
+                headers={"WWW-Authenticate": 'Basic realm="Analise de Credito"'},
                 content="Acesso restrito.",
             )
         request.state.usuario = usuario

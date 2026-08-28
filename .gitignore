@@ -1,36 +1,32 @@
-# Ambiente
+# --- Segredos e credenciais (NUNCA versionar) ---
 .env
+.env.*
+!.env.example
+# chaves privadas (ex.: deploy/vertys-analise.pem)
+*.pem
+*.key
+
+# --- Ambiente Python ---
 .venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# --- Dados locais e caches (banco SQLite + caches CAPAG/entes; refazem-se) ---
+data/
+
+# --- Artefatos de build/deploy ---
+deploy/app.tar.gz
+# ids efêmeros de infra (instance-id, alloc-id, etc.)
+deploy/*.txt
+*.zip
+
+# --- Config local de ferramentas ---
 .claude/
 
-# Python
-__pycache__/
-*.py[cod]
-*.pyd
-
-# Caches
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-
-# IDEs
-.idea/
-.vscode/
-
-# Dados locais
-data/*
-!data/.gitkeep
-
-# Logs
-*.log
-logs/
-
-# Temporários
-*.tmp
-*.bak
-*.swp
-
-# Sistema
+# --- Sistema operacional ---
 Thumbs.db
-Desktop.ini
+desktop.ini
 .DS_Store

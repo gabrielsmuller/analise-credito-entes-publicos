@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block conteudo %}
+<div class="cartao" style="text-align:center; padding:2.5rem 1.5rem">
+  <div id="area-carregando">
+    <div class="rodela" aria-hidden="true"></div>
+    <h2 style="margin:1.2rem 0 0.4rem">Gerando o dossiê...</h2>
+    <p class="dica" style="max-width:520px; margin:0 auto">
+      Estamos coletando os dados públicos (caixa, restos a pagar, CAPAG, SICONFI, convênios,
+      PNCP) e redigindo a análise. Isso leva de 1 a 3 minutos, às vezes um pouco mais quando os
+      portais do governo estão lentos. Pode deixar esta aba aberta - ela abre o dossiê sozinha
+      quando terminar.
+    </p>
+    <p class="dica" id="tempo-decorrido" style="margin-top:1rem"></p>
+  </div>
+
+  <div id="area-erro" style="display:none">
+    <div class="aviso-erro" id="msg-erro" style="text-align:left"></div>
+    <a href="/" class="dica">← Voltar e tentar novamente</a>
+  </div>
+</div>
+
+<style>
+  .rodela { width: 52px; height: 52px; border: 5px solid var(--borda);
+            border-top-color: var(--azul-claro); border-radius: 50%;
+            margin: 0 auto; animation: girar 0.9s linear infinite; }
+  @keyframes girar { to { transform: rotate(360deg); } }
+</style>
+
+<script>
+  const jobId = {{ job_id | tojson }};
+  const inicio = Date.now();
+  const areaErro = document.getElementById("area-erro");
+  const areaCarregando = document.getElementById("area-carregando");
+  const tempoEl = document.getElementById("tempo-decorrido");
+
+  function mostrarErro(msg) {
+    areaCarregando.style.display = "none";
+    document.getElementById("msg-erro").textContent = msg;
+    areaErro.style.display = "block";
+  }
+
+  setInterval(() => {
+    const s = Math.floor((Date.now() - inicio) / 1000);
+    tempoEl.textContent = `decorrido: ${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
+  }, 1000);
+
+  let falhasSeguidas = 0;
+  async function consultar() {
+    try {
+      const r = await fetch(`/status/${jobId}`, { headers: { "Accept": "application/json" } });
+      if (!r.ok) throw new Error("status " + r.status);
+      falhasSeguidas = 0;
+      const d = await r.json();
+      if (d.status === "pronto") {
+        let url = `/dossie/${d.analise_id}`;
+        if (d.erro_dossie) url += `?erro_dossie=${encodeURIComponent(d.erro_dossie.slice(0, 200))}`;
+        window.location.href = url;
+        return;
+      }
+      if (d.status === "erro") {
+        mostrarErro("Não foi possível concluir a análise: " + (d.erro || "erro desconhecido")
+          + " - os portais do governo podem estar instáveis agora. Tente novamente em alguns minutos.");
+        return;
+      }
+    } catch (e) {
+      // uma falha isolada de rede não deve derrubar o acompanhamento; só desiste
+      // depois de várias seguidas (o processamento continua no servidor).
+      if (++falhasSeguidas >= 10) {
+        mostrarErro("Perdemos a conexão com o servidor enquanto a análise rodava. "
+          + "Ela pode ter concluído - confira no Histórico em alguns instantes.");
+        return;
+      }
+    }
+    setTimeout(consultar, 3000);
+  }
+  consultar();
+</script>
+{% endblock %}

@@ -100,10 +100,17 @@ def _montar_prompt(municipio: str, uf: str, dados: dict, scorecard: dict, observ
     )
 
 
+# O SDK da OpenAI usa 600s de timeout e 2 retries por padrão, o que numa falha
+# vira ~30 min de espera - a causa mais provável de "carregar infinitamente".
+# Limitamos a algo que o setor tolera: 180s por tentativa, 1 retry.
+IA_TIMEOUT = 180.0
+IA_RETRIES = 1
+
+
 def _gerar_openai(prompt: str) -> str:
     from openai import OpenAI
 
-    client = OpenAI()
+    client = OpenAI(timeout=IA_TIMEOUT, max_retries=IA_RETRIES)
     resposta = client.chat.completions.create(
         model=OPENAI_MODEL,
         messages=[{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}],
@@ -120,7 +127,7 @@ def _gerar_openai(prompt: str) -> str:
 def _gerar_anthropic(prompt: str) -> str:
     import anthropic
 
-    client = anthropic.Anthropic()
+    client = anthropic.Anthropic(timeout=IA_TIMEOUT, max_retries=IA_RETRIES)
     with client.messages.stream(
         model=ANTHROPIC_MODEL,
         max_tokens=16000,
@@ -183,7 +190,7 @@ def responder_pergunta(
     if LLM_PROVIDER == "openai":
         from openai import OpenAI
 
-        resposta = OpenAI().chat.completions.create(
+        resposta = OpenAI(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_CHAT},
@@ -195,7 +202,7 @@ def responder_pergunta(
 
     import anthropic
 
-    with anthropic.Anthropic().messages.stream(
+    with anthropic.Anthropic(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).messages.stream(
         model=ANTHROPIC_MODEL,
         max_tokens=4000,
         system=SYSTEM_CHAT + "\n\n" + base,

@@ -1,0 +1,4 @@
+# Normaliza fim de linha: LF no repositório para todo texto,
+# exceto scripts PowerShell, que ficam com CRLF (padrão Windows).
+* text=auto eol=lf
+*.ps1 text eol=crlf

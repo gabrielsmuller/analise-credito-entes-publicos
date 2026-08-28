@@ -7,12 +7,34 @@ import asyncio
 
 import httpx
 
-TIMEOUT = httpx.Timeout(90.0, connect=15.0)  # PNCP e Tesouro podem levar >30s por consulta
+# 45s por request é folgado para o Tesouro/PNCP sem deixar uma request pendurada
+# consumir sozinha o teto do coletor. O download grande da CAPAG usa timeout
+# próprio (ver capag.py).
+TIMEOUT = httpx.Timeout(45.0, connect=10.0)
 HEADERS = {"User-Agent": "analise-credito-entes-publicos/1.0"}
 
 
 def resultado(fonte: str, dados=None, erro: str | None = None) -> dict:
     return {"fonte": fonte, "ok": erro is None, "dados": dados, "erro": erro}
+
+
+# Teto de tempo por coletor. Uma fonte lenta ou pendurada (SICONFI instável, o
+# XLSX da CAPAG, o PNCP em 504) não pode travar a análise inteira: passado o
+# teto, ela vira "indisponível" e o resto segue. Generoso o bastante para não
+# cortar coletas legítimas (CAPAG e PNCP levam ~100s em dia ruim).
+TETO_COLETOR = 150.0
+
+
+async def com_teto(fonte: str, coro, teto: float = TETO_COLETOR) -> dict:
+    """Executa um coletor com limite de tempo; nunca deixa a análise pendurada."""
+    try:
+        return await asyncio.wait_for(coro, timeout=teto)
+    except asyncio.TimeoutError:
+        return resultado(
+            fonte, erro=f"tempo esgotado ({teto:.0f}s) - fonte lenta ou fora do ar no momento"
+        )
+    except Exception as exc:  # noqa: BLE001 - qualquer falha vira fonte indisponível
+        return resultado(fonte, erro=f"{type(exc).__name__}: {exc}")
 
 
 RETENTAVEIS = (429, 500, 502, 503, 504)

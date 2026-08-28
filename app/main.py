@@ -1,5 +1,8 @@
 """App web interno de análise de crédito de entes públicos."""
 import asyncio
+import json
+import os
+import uuid
 from pathlib import Path
 
 import markdown as md
@@ -10,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 from . import db
 from .auth import AutenticacaoBasica
-from .collectors.base import novo_client
+from .collectors.base import com_teto, novo_client
 from .collectors.capag import coletar_capag
 from .collectors.cnpj import coletar_cnpj
 from .collectors.entes import buscar as buscar_entes, coletar_ente, resolver_cnpj
@@ -94,31 +97,41 @@ async def api_municipios(q: str = ""):
             return await buscar_municipios(client, q.strip())
 
 
-@app.post("/analisar")
-async def analisar(
-    request: Request,
-    cod_ibge: str = Form(...),
-    municipio: str = Form(""),
-    uf: str = Form(""),
-    serasa: str = Form(""),
-    cauc: str = Form(""),
-    cauc_situacao: str = Form("nao_consultado"),
-):
+async def executar_analise(
+    cod_ibge: str,
+    municipio: str,
+    uf: str,
+    serasa: str,
+    cauc: str,
+    cauc_situacao: str,
+) -> tuple[int, str | None]:
+    """Coleta, pontua e redige o dossiê. Devolve (id_da_análise, erro_do_dossiê).
+
+    É o miolo pesado da análise (2-3 min). Roda em segundo plano - ver
+    disparar_analise -, então nunca é chamado diretamente por uma requisição
+    HTTP que o navegador precise segurar.
+    """
     async with novo_client() as client:
         # o CNPJ vem do registro oficial do Tesouro, não digitado: um CNPJ
         # errado não falharia, apenas traria dados de outra entidade
-        cnpj = await resolver_cnpj(client, cod_ibge)
+        try:
+            cnpj = await asyncio.wait_for(resolver_cnpj(client, cod_ibge), timeout=60)
+        except asyncio.TimeoutError:
+            cnpj = None
+
+        # cada coletor tem teto próprio: uma fonte pendurada vira "indisponível"
+        # em vez de travar a análise inteira (ver com_teto em collectors/base.py)
         resultados = await asyncio.gather(
-            coletar_ente(client, cod_ibge),
-            coletar_contexto(client, cod_ibge),
-            coletar_capag(client, cod_ibge),
-            coletar_siconfi(client, cod_ibge),
-            coletar_pagamentos(client, cod_ibge),
-            coletar_pncp(client, cnpj),
-            coletar_cnpj(client, cnpj),
-            coletar_transparencia(client, cnpj),
-            coletar_transferencias(client, cnpj),
-            coletar_convenios(client, cod_ibge, cnpj),
+            com_teto("ente", coletar_ente(client, cod_ibge)),
+            com_teto("ibge", coletar_contexto(client, cod_ibge)),
+            com_teto("capag", coletar_capag(client, cod_ibge)),
+            com_teto("siconfi", coletar_siconfi(client, cod_ibge)),
+            com_teto("pagamentos", coletar_pagamentos(client, cod_ibge)),
+            com_teto("pncp", coletar_pncp(client, cnpj)),
+            com_teto("cnpj", coletar_cnpj(client, cnpj)),
+            com_teto("transparencia", coletar_transparencia(client, cnpj)),
+            com_teto("transferencias", coletar_transferencias(client, cnpj)),
+            com_teto("convenios", coletar_convenios(client, cod_ibge, cnpj)),
         )
     dados = {r["fonte"]: r for r in resultados}
 
@@ -150,14 +163,88 @@ async def analisar(
         erro_dossie = f"{type(exc).__name__}: {exc}"
 
     analise_id = db.salvar_analise(municipio, uf, cod_ibge, cnpj, dados, scorecard, dossie_md)
+    return analise_id, erro_dossie
 
-    url = f"/dossie/{analise_id}"
-    if erro_dossie:
-        url += f"?erro_dossie={erro_dossie[:200]}"
+
+async def _processar_job(job_id: str, params: dict) -> None:
+    """Roda a análise e grava o resultado no job (para o polling ler)."""
+    try:
+        analise_id, erro_dossie = await executar_analise(**params)
+        db.atualizar_job(job_id, "pronto", analise_id=analise_id, erro_dossie=erro_dossie)
+    except Exception as exc:  # noqa: BLE001 - falha vira status de erro, não derruba nada
+        db.atualizar_job(job_id, "erro", erro=f"{type(exc).__name__}: {exc}")
+
+
+async def disparar_analise(params: dict) -> str:
+    """Cria o job e inicia o processamento em segundo plano; devolve o job_id.
+
+    - No Lambda: invoca a própria função de forma assíncrona (InvocationType
+      Event). A requisição HTTP retorna na hora, sem segurar o navegador por
+      minutos (o que a Function URL/API Gateway não permitiria).
+    - Local: dispara uma task em background, para a experiência de polling ser
+      idêntica à de produção.
+    """
+    job_id = uuid.uuid4().hex[:12]
+    db.criar_job(job_id)
+    nome_funcao = os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+    if nome_funcao:
+        import boto3
+
+        boto3.client("lambda").invoke(
+            FunctionName=nome_funcao,
+            InvocationType="Event",
+            Payload=json.dumps({"tipo": "analise", "job_id": job_id, "params": params}).encode(),
+        )
+    else:
+        asyncio.create_task(_processar_job(job_id, params))
+    return job_id
+
+
+@app.post("/analisar")
+async def analisar(
+    request: Request,
+    cod_ibge: str = Form(...),
+    municipio: str = Form(""),
+    uf: str = Form(""),
+    serasa: str = Form(""),
+    cauc: str = Form(""),
+    cauc_situacao: str = Form("nao_consultado"),
+):
+    params = {
+        "cod_ibge": cod_ibge,
+        "municipio": municipio,
+        "uf": uf,
+        "serasa": serasa,
+        "cauc": cauc,
+        "cauc_situacao": cauc_situacao,
+    }
+    job_id = await disparar_analise(params)
+    url = f"/processando/{job_id}"
     # htmx segue este cabeçalho; navegação normal usa o redirect
     if request.headers.get("HX-Request"):
         return HTMLResponse("", headers={"HX-Redirect": url})
     return RedirectResponse(url, status_code=303)
+
+
+@app.get("/processando/{job_id}", response_class=HTMLResponse)
+async def processando(request: Request, job_id: str):
+    job = db.buscar_job(job_id)
+    if job is None:
+        return HTMLResponse("Processo não encontrado", status_code=404)
+    return templates.TemplateResponse(request, "processando.html", {"job_id": job_id})
+
+
+@app.get("/status/{job_id}")
+async def status_job(job_id: str):
+    job = db.buscar_job(job_id)
+    if job is None:
+        return JSONResponse({"erro": "não encontrado"}, status_code=404)
+    return {
+        "status": job.get("status"),
+        "analise_id": job.get("analise_id"),
+        "erro": job.get("erro"),
+        "erro_dossie": job.get("erro_dossie"),
+    }
 
 
 @app.get("/dossie/{analise_id}", response_class=HTMLResponse)
@@ -236,3 +323,34 @@ async def aquecer_cache_municipios():
             await listar_municipios(client)
     except Exception:  # noqa: BLE001 - sem rede no boot, autocomplete tenta de novo depois
         pass
+
+
+# Adaptador para AWS Lambda. O mesmo Lambda tem dois papéis:
+#  - front HTTP (via API Gateway -> Mangum): páginas, /analisar, polling, chat;
+#  - worker: quando é invocado de forma assíncrona com {"tipo":"analise",...},
+#    roda a análise pesada em segundo plano (ver disparar_analise).
+# Presente só quando mangum está instalado; no notebook local o app roda por
+# uvicorn e este handler é ignorado. lifespan="off" evita rodar o startup acima
+# em todo cold start (o cache de municípios é reconstruído sob demanda).
+try:
+    from mangum import Mangum
+
+    _mangum = Mangum(app, lifespan="off")
+
+    def handler(event, context):
+        if isinstance(event, dict) and event.get("tipo") == "analise":
+            # asyncio.run() FECHA o loop ao terminar; como o Lambda reaproveita o
+            # container, o Mangum depois chamaria get_event_loop() num loop morto
+            # e toda requisição HTTP daria 500. Por isso rodamos o worker num loop
+            # próprio e deixamos um loop novo e aberto para o Mangum reaproveitar.
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_processar_job(event["job_id"], event["params"]))
+            finally:
+                loop.close()
+                asyncio.set_event_loop(asyncio.new_event_loop())
+            return {"ok": True}
+        return _mangum(event, context)
+except ImportError:  # pragma: no cover - mangum não é dependência do modo local
+    handler = None
