@@ -6,14 +6,14 @@ import uuid
 from pathlib import Path
 
 import markdown as md
-from fastapi import Body, FastAPI, Form, Request
+from fastapi import Body, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from . import db
 from .auth import AutenticacaoBasica
-from .collectors.base import com_teto, novo_client
+from .collectors.base import com_teto, nao_aplicavel, novo_client
 from .collectors.capag import coletar_capag
 from .collectors.cnpj import coletar_cnpj
 from .collectors.entes import buscar as buscar_entes, coletar_ente, resolver_cnpj
@@ -22,8 +22,9 @@ from .collectors.pagamentos import coletar_pagamentos
 from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
-from .dossier import gerar_dossie, responder_pergunta
+from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
 from .scoring import calcular_scorecard
+from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
 
 app = FastAPI(title="Análise de Crédito - Entes Públicos")
 app.add_middleware(AutenticacaoBasica)
@@ -97,65 +98,138 @@ async def api_municipios(q: str = ""):
             return await buscar_municipios(client, q.strip())
 
 
+# Fontes indexadas por município que não existem para um ente avaliado só por
+# CNPJ (autarquia, universidade, consórcio, fundação, empresa pública): esses
+# entes não entregam demonstrativos fiscais próprios ao SICONFI nem têm CAPAG.
+_FONTES_MUNICIPAIS = [
+    ("ente", "registro de municípios do SICONFI"),
+    ("ibge", "população e PIB municipal do IBGE"),
+    ("capag", "CAPAG do Tesouro Nacional (só entes federativos)"),
+    ("siconfi", "RGF/RREO do SICONFI (só entes federativos)"),
+    ("pagamentos", "caixa e restos a pagar do SICONFI"),
+    ("convenios", "convênios federais por código de município"),
+]
+
+
+async def _extrair_serasa_seguro(texto: str) -> dict | None:
+    """Extrai o relatório Serasa por IA; devolve um resultado no padrão dos coletores.
+
+    None quando não há PDF. Falha de extração não derruba a análise: vira uma fonte
+    "indisponível", e o scorecard trata como se o relatório não tivesse sido lido.
+    """
+    if not (texto or "").strip():
+        return None
+    try:
+        dados = normalizar_serasa(await asyncio.to_thread(extrair_serasa, texto))
+        return {"fonte": "serasa", "ok": True, "dados": dados, "texto": texto}
+    except Exception as exc:  # noqa: BLE001 - extração falhou: registra e segue
+        return {"fonte": "serasa", "ok": False, "dados": None, "texto": texto,
+                "erro": f"falha ao extrair o relatório Serasa: {type(exc).__name__}: {exc}"}
+
+
 async def executar_analise(
+    tipo_ente: str,
     cod_ibge: str,
     municipio: str,
     uf: str,
+    tipo_orgao: str,
+    serasa_texto: str,
     serasa: str,
     cauc: str,
     cauc_situacao: str,
 ) -> tuple[int, str | None]:
     """Coleta, pontua e redige o dossiê. Devolve (id_da_análise, erro_do_dossiê).
 
+    Dois modos, conforme tipo_ente:
+      - "municipio": CNPJ resolvido pelo registro do Tesouro e todo o pipeline
+        fiscal do SICONFI (comportamento igual ao histórico). O relatório Serasa
+        é opcional aqui.
+      - "cnpj": ente identificado pelo próprio relatório Serasa (autarquia,
+        universidade, consórcio...). A IA extrai nome e CNPJ do PDF; só rodam as
+        fontes indexadas por CNPJ, e o relatório Serasa é o eixo do score.
+
     É o miolo pesado da análise (2-3 min). Roda em segundo plano - ver
     disparar_analise -, então nunca é chamado diretamente por uma requisição
     HTTP que o navegador precise segurar.
     """
+    serasa_res = await _extrair_serasa_seguro(serasa_texto)
+    serasa_dados = (serasa_res or {}).get("dados") or {}
     async with novo_client() as client:
-        # o CNPJ vem do registro oficial do Tesouro, não digitado: um CNPJ
-        # errado não falharia, apenas traria dados de outra entidade
-        try:
-            cnpj = await asyncio.wait_for(resolver_cnpj(client, cod_ibge), timeout=60)
-        except asyncio.TimeoutError:
-            cnpj = None
+        if tipo_ente == "cnpj":
+            cod_ibge = None
+            # nome e CNPJ vêm do próprio relatório Serasa, extraídos pela IA
+            cnpj = serasa_dados.get("cnpj") or None
+            municipio = (serasa_dados.get("razao_social") or municipio or "").strip() or "(ente sem nome)"
+            # só as fontes que se resolvem por CNPJ
+            resultados = await asyncio.gather(
+                com_teto("pncp", coletar_pncp(client, cnpj)),
+                com_teto("cnpj", coletar_cnpj(client, cnpj)),
+                com_teto("transparencia", coletar_transparencia(client, cnpj)),
+                com_teto("transferencias", coletar_transferencias(client, cnpj)),
+            )
+            dados = {r["fonte"]: r for r in resultados}
+            for fonte, motivo in _FONTES_MUNICIPAIS:
+                dados[fonte] = nao_aplicavel(fonte, f"não se aplica a este ente ({motivo})")
+            # o cadastro da Receita completa a UF
+            cad = dados.get("cnpj", {})
+            if cad.get("ok") and not (uf or "").strip():
+                uf = cad["dados"].get("uf") or ""
+        else:
+            # o CNPJ vem do registro oficial do Tesouro, não digitado: um CNPJ
+            # errado não falharia, apenas traria dados de outra entidade
+            try:
+                cnpj = await asyncio.wait_for(resolver_cnpj(client, cod_ibge), timeout=60)
+            except asyncio.TimeoutError:
+                cnpj = None
 
-        # cada coletor tem teto próprio: uma fonte pendurada vira "indisponível"
-        # em vez de travar a análise inteira (ver com_teto em collectors/base.py)
-        resultados = await asyncio.gather(
-            com_teto("ente", coletar_ente(client, cod_ibge)),
-            com_teto("ibge", coletar_contexto(client, cod_ibge)),
-            com_teto("capag", coletar_capag(client, cod_ibge)),
-            com_teto("siconfi", coletar_siconfi(client, cod_ibge)),
-            com_teto("pagamentos", coletar_pagamentos(client, cod_ibge)),
-            com_teto("pncp", coletar_pncp(client, cnpj)),
-            com_teto("cnpj", coletar_cnpj(client, cnpj)),
-            com_teto("transparencia", coletar_transparencia(client, cnpj)),
-            com_teto("transferencias", coletar_transferencias(client, cnpj)),
-            com_teto("convenios", coletar_convenios(client, cod_ibge, cnpj)),
-        )
-    dados = {r["fonte"]: r for r in resultados}
+            # cada coletor tem teto próprio: uma fonte pendurada vira "indisponível"
+            # em vez de travar a análise inteira (ver com_teto em collectors/base.py)
+            resultados = await asyncio.gather(
+                com_teto("ente", coletar_ente(client, cod_ibge)),
+                com_teto("ibge", coletar_contexto(client, cod_ibge)),
+                com_teto("capag", coletar_capag(client, cod_ibge)),
+                com_teto("siconfi", coletar_siconfi(client, cod_ibge)),
+                com_teto("pagamentos", coletar_pagamentos(client, cod_ibge)),
+                com_teto("pncp", coletar_pncp(client, cnpj)),
+                com_teto("cnpj", coletar_cnpj(client, cnpj)),
+                com_teto("transparencia", coletar_transparencia(client, cnpj)),
+                com_teto("transferencias", coletar_transferencias(client, cnpj)),
+                com_teto("convenios", coletar_convenios(client, cod_ibge, cnpj)),
+            )
+            dados = {r["fonte"]: r for r in resultados}
 
-    # nome e UF vêm do registro do Tesouro, não do formulário: o servidor já
-    # tem o dado canônico, e aceitar o do cliente abre espaço para divergência
-    # de acentuação e para um rótulo que não corresponde ao ente analisado
-    ente = dados.get("ente", {})
-    if ente.get("ok"):
-        municipio = ente["dados"]["nome"]
-        uf = ente["dados"]["uf"]
+            # nome e UF vêm do registro do Tesouro, não do formulário: o servidor já
+            # tem o dado canônico, e aceitar o do cliente abre espaço para divergência
+            # de acentuação e para um rótulo que não corresponde ao ente analisado
+            ente = dados.get("ente", {})
+            if ente.get("ok"):
+                municipio = ente["dados"]["nome"]
+                uf = ente["dados"]["uf"]
 
-    scorecard = calcular_scorecard(dados)
+    # marcadores lidos pelo scorecard, pelo dossiê e pelo template
+    dados["tipo_ente"] = tipo_ente
+    if serasa_res is not None:
+        dados["serasa"] = serasa_res
+    if tipo_ente == "cnpj" and (tipo_orgao or "").strip():
+        dados["tipo_orgao"] = {
+            "fonte": "tipo_orgao", "ok": True, "dados": {"rotulo": tipo_orgao.strip()}
+        }
 
     observacoes = {
         "serasa": serasa.strip() or None,
         "cauc": cauc.strip() or None,
         "cauc_situacao": cauc_situacao,
     }
-    # guardadas junto dos dados para aparecerem no dossiê e no histórico
+    # guardadas junto dos dados para aparecerem no dossiê e no histórico, e para
+    # o scorecard aplicar a restrição do CAUC. Precisa entrar ANTES de
+    # calcular_scorecard, que lê essas observações.
     dados["observacoes_manuais"] = {"fonte": "observacoes_manuais", "ok": True, "dados": observacoes}
+
+    scorecard = calcular_scorecard(dados, tipo_ente=tipo_ente)
 
     try:
         dossie_md = await asyncio.to_thread(
-            gerar_dossie, municipio, uf, dados, scorecard, observacoes
+            gerar_dossie, municipio, uf, dados, scorecard, observacoes, tipo_ente
         )
         erro_dossie = None
     except Exception as exc:  # noqa: BLE001 - dossiê indisponível não descarta a coleta
@@ -200,20 +274,73 @@ async def disparar_analise(params: dict) -> str:
     return job_id
 
 
+def _erro_form(request: Request, mensagem: str) -> HTMLResponse:
+    """Rejeita o formulário com uma mensagem legível, antes de gastar a análise.
+
+    O cabeçalho X-Erro carrega o texto para o htmx exibir em #erro-analise (o
+    corpo cobre a navegação normal, sem htmx).
+    """
+    return HTMLResponse(mensagem, status_code=400, headers={"X-Erro": mensagem})
+
+
+# PDFs de relatório Serasa são pequenos (algumas centenas de KB). O teto evita
+# que um upload grande demais entre no fluxo (e no payload da invocação async).
+_MAX_PDF_BYTES = 8 * 1024 * 1024
+
+
+async def _texto_do_pdf(request: Request, arquivo: UploadFile | None, obrigatorio: bool):
+    """Lê o PDF enviado e devolve (texto, resposta_de_erro). Só um dos dois é não-nulo."""
+    tem_arquivo = arquivo is not None and (arquivo.filename or "").strip()
+    if not tem_arquivo:
+        if obrigatorio:
+            return None, _erro_form(request, "Anexe o PDF do relatório Serasa para analisar este ente.")
+        return "", None
+    conteudo = await arquivo.read()
+    if len(conteudo) > _MAX_PDF_BYTES:
+        return None, _erro_form(request, "O PDF é grande demais (máx. 8 MB).")
+    try:
+        texto = await asyncio.to_thread(extrair_texto_pdf, conteudo)
+    except ValueError as exc:
+        return None, _erro_form(request, str(exc))
+    if not parece_relatorio_serasa(texto):
+        return None, _erro_form(
+            request, "O PDF não parece um relatório Serasa/SCC Check. Confira o arquivo."
+        )
+    return texto, None
+
+
 @app.post("/analisar")
 async def analisar(
     request: Request,
-    cod_ibge: str = Form(...),
+    tipo_ente: str = Form("municipio"),
+    cod_ibge: str = Form(""),
     municipio: str = Form(""),
     uf: str = Form(""),
+    tipo_orgao: str = Form(""),
     serasa: str = Form(""),
     cauc: str = Form(""),
     cauc_situacao: str = Form("nao_consultado"),
+    relatorio_serasa: UploadFile | None = File(None),
 ):
+    tipo_ente = "cnpj" if tipo_ente == "cnpj" else "municipio"
+    # valida o mínimo de cada modo antes de gastar uma análise (2-3 min)
+    if tipo_ente == "municipio" and not (cod_ibge or "").strip():
+        return _erro_form(request, "Selecione um município na lista de sugestões.")
+
+    # relatório Serasa: obrigatório no modo CNPJ, opcional no município
+    serasa_texto, erro = await _texto_do_pdf(
+        request, relatorio_serasa, obrigatorio=(tipo_ente == "cnpj")
+    )
+    if erro is not None:
+        return erro
+
     params = {
+        "tipo_ente": tipo_ente,
         "cod_ibge": cod_ibge,
         "municipio": municipio,
         "uf": uf,
+        "tipo_orgao": tipo_orgao,
+        "serasa_texto": serasa_texto,
         "serasa": serasa,
         "cauc": cauc,
         "cauc_situacao": cauc_situacao,

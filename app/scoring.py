@@ -138,6 +138,107 @@ def _pontuar_sancoes(transp: dict) -> dict:
     return _dim("Sanções CEIS/CNEP/CEPIM", 0, maximo, f"{total} registro(s) de sanção encontrados")
 
 
+# Pontuação do relatório Serasa (extraído do PDF pela IA; ver dossier.extrair_serasa).
+# Para entes sem demonstrativos fiscais (autarquias, universidades, consórcios) esta
+# é a principal evidência de crédito. Três dimensões, somando 70 pontos - à altura do
+# bloco fiscal dos municípios:
+#   - Score / nível de risco (30): a leitura consolidada da Serasa;
+#   - Pontualidade de pagamento (20): % de compromissos pagos em dia (12 meses) - é o
+#     equivalente privado ao "comportamento de pagamento" que falta a esses entes;
+#   - Restrições (20): PEFIN/REFIN/dívidas/protestos/cheques, pela gravidade e materialidade.
+NIVEL_RISCO_PONTOS = {"minimo": 30, "baixo": 24, "medio": 14, "relevante": 6, "iminente": 0}
+
+
+def _pontuar_serasa_score(d: dict) -> dict:
+    nome = "Serasa Score / risco"
+    nivel = (d.get("nivel_risco") or "").strip().lower()
+    score = d.get("score")
+    prob = d.get("probabilidade_pagamento")
+    detalhe_base = []
+    if score is not None:
+        detalhe_base.append(f"Serasa Score {score}/{d.get('score_max') or 1000}")
+    if prob is not None:
+        detalhe_base.append(f"probabilidade de pagamento {_pct_br(prob)}")
+
+    if nivel in NIVEL_RISCO_PONTOS:
+        pontos = NIVEL_RISCO_PONTOS[nivel]
+        detalhe = f"risco {nivel}" + (" - " + ", ".join(detalhe_base) if detalhe_base else "")
+    elif prob is not None:
+        # sem o nível textual, a probabilidade de pagamento é o melhor eixo
+        pontos = _faixa(-prob, [(-95, 30), (-90, 24), (-80, 14), (-70, 6)], 0)
+        detalhe = ", ".join(detalhe_base)
+    else:
+        return _dim(nome, None, 30, "score não identificado no relatório")
+    if d.get("pratica_recomendada"):
+        detalhe += f"; prática recomendada pela Serasa: {d['pratica_recomendada']}"
+    return _dim(nome, pontos, 30, detalhe)
+
+
+def _pontuar_pontualidade(d: dict) -> dict:
+    nome = "Pontualidade de pagamento (Serasa)"
+    pont = d.get("pontualidade_pct")
+    if pont is None:
+        return _dim(nome, None, 20, "não informada no relatório")
+    pontos = _faixa(-pont, [(-95, 20), (-90, 16), (-80, 10), (-70, 5)], 0)
+    classe = d.get("pontualidade_classe")
+    extra = f" (classificação {classe})" if classe else ""
+    return _dim(nome, pontos, 20, f"{_pct_br(pont)} dos compromissos pagos em dia nos últimos 12 meses{extra}")
+
+
+def _pontuar_restricoes(d: dict) -> dict:
+    nome = "Restrições (PEFIN/REFIN/protestos)"
+    maximo = 20
+    r = d.get("restricoes") or {}
+    if not r:
+        return _dim(nome, None, maximo, "não identificadas no relatório")
+    consta = {k: v for k, v in r.items() if v and v.get("consta")}
+    if not consta:
+        return _dim(nome, maximo, maximo, "nenhuma restrição, protesto ou dívida registrada")
+
+    total = _restricoes_valor_total(d)
+    gasto = d.get("gasto_estimado_anual")
+    pct = (total / gasto * 100) if (total and gasto) else None
+    pontos = maximo
+    partes = []
+    # protesto e REFIN são mais graves que PEFIN (protesto é público e cartorial;
+    # REFIN é dívida já renegociada e não paga)
+    if (r.get("protesto") or {}).get("consta"):
+        pontos = min(pontos, 4)
+        partes.append("protesto nacional ativo")
+    if (r.get("refin") or {}).get("consta"):
+        pontos = min(pontos, 6)
+        partes.append("REFIN ativo")
+    # PEFIN/dívidas: pela materialidade frente ao porte (gasto estimado)
+    if pct is not None:
+        pontos = min(pontos, _faixa(pct, [(0.5, 16), (2.0, 10), (5.0, 5)], 2))
+    elif total:
+        pontos = min(pontos, 10)
+    rotulos = ", ".join(
+        f"{v['tipo'] if v.get('tipo') else k.upper()} ({v.get('ocorrencias') or 0}×)" for k, v in consta.items()
+    )
+    partes.insert(0, rotulos)
+    if total:
+        materialidade = f" ({_pct_br(pct, 2)} do gasto estimado)" if pct is not None else ""
+        partes.append(f"somando {_brl(total)}{materialidade}")
+    return _dim(nome, pontos, maximo, "; ".join(partes))
+
+
+def _restricoes_valor_total(d: dict) -> float:
+    """Soma os valores das restrições que constam (o modelo nem sempre soma)."""
+    if d.get("restricoes_valor_total"):
+        return d["restricoes_valor_total"]
+    r = d.get("restricoes") or {}
+    return round(sum((v.get("valor") or 0) for v in r.values() if v and v.get("consta")), 2)
+
+
+def _pontuar_serasa_dims(serasa: dict) -> list[dict]:
+    """As três dimensões do relatório Serasa; [] quando não há relatório."""
+    if not serasa or not serasa.get("ok"):
+        return []
+    d = serasa.get("dados") or {}
+    return [_pontuar_serasa_score(d), _pontuar_pontualidade(d), _pontuar_restricoes(d)]
+
+
 def _pontuar_convenios(conv: dict) -> dict:
     maximo = 8
     nome = "Convênios federais (adimplência)"
@@ -468,6 +569,11 @@ BLOCOS = {
         "Dívida consolidada líquida (% RCL)",
     ],
     "Conformidade": ["Convênios federais (adimplência)", "Sanções CEIS/CNEP/CEPIM"],
+    "Relatório Serasa": [
+        "Serasa Score / risco",
+        "Pontualidade de pagamento (Serasa)",
+        "Restrições (PEFIN/REFIN/protestos)",
+    ],
     "Contexto socioeconômico": ["Porte populacional", "PIB per capita"],
 }
 
@@ -517,6 +623,8 @@ def _agrupar_em_blocos(dimensoes: list[dict]) -> list[dict]:
     blocos = []
     for nome, membros in BLOCOS.items():
         dims = [d for d in dimensoes if d["dimensao"] in membros]
+        if not dims:
+            continue  # bloco cujas dimensões não se aplicam a este ente (ex.: Serasa não consultado)
         avaliadas = [d for d in dims if d["pontos"] is not None]
         possivel = sum(d["maximo"] for d in avaliadas)
         obtido = sum(d["pontos"] for d in avaliadas)
@@ -533,16 +641,33 @@ def _agrupar_em_blocos(dimensoes: list[dict]) -> list[dict]:
     return blocos
 
 
-def calcular_scorecard(dados: dict) -> dict:
-    """dados: dict {fonte: resultado_do_coletor}."""
-    dimensoes = [
-        *_pontuar_pagamento(dados.get("pagamentos", {})),
-        _pontuar_capag(dados.get("capag", {})),
-        *_pontuar_fiscal(dados.get("siconfi", {})),
-        _pontuar_convenios(dados.get("convenios", {})),
-        _pontuar_sancoes(dados.get("transparencia", {})),
-        *_pontuar_contexto(dados.get("ibge", {})),
-    ]
+def calcular_scorecard(dados: dict, tipo_ente: str = "municipio") -> dict:
+    """dados: dict {fonte: resultado_do_coletor}.
+
+    tipo_ente distingue o município (com todo o pipeline fiscal do SICONFI) do
+    ente analisado apenas por CNPJ (autarquia, universidade, consórcio, fundação,
+    empresa pública) - que não entrega RGF/RREO/CAPAG e é avaliado pela consulta
+    Serasa e pelas fontes indexadas por CNPJ (sanções, cadastro).
+    """
+    obs = (dados.get("observacoes_manuais", {}).get("dados")) or {}
+    serasa_dims = _pontuar_serasa_dims(dados.get("serasa"))
+
+    if tipo_ente == "cnpj":
+        # Só as dimensões que fazem sentido sem demonstrativos fiscais. As demais
+        # não entram nem como lacuna: são inaplicáveis, não "faltando".
+        dimensoes = [*serasa_dims, _pontuar_sancoes(dados.get("transparencia", {}))]
+    else:
+        dimensoes = [
+            *_pontuar_pagamento(dados.get("pagamentos", {})),
+            _pontuar_capag(dados.get("capag", {})),
+            *_pontuar_fiscal(dados.get("siconfi", {})),
+            _pontuar_convenios(dados.get("convenios", {})),
+            _pontuar_sancoes(dados.get("transparencia", {})),
+            *_pontuar_contexto(dados.get("ibge", {})),
+        ]
+        # Serasa entra no município só quando há relatório, para não inflar o
+        # denominador de cobertura das análises que não usam essa consulta.
+        dimensoes.extend(serasa_dims)
 
     avaliadas = [d for d in dimensoes if d["pontos"] is not None]
     lacunas = [d["dimensao"] for d in dimensoes if d["pontos"] is None]
@@ -604,10 +729,36 @@ def calcular_scorecard(dados: dict) -> dict:
                 semaforo = "amarelo"
             restricoes.append(f"{motivo} impede semáforo verde")
 
+    # Sinais graves do relatório Serasa impedem o verde. Protesto e REFIN são
+    # cartoriais/renegociados e pesam por si; PEFIN/dívidas só bloqueiam quando
+    # materiais frente ao porte (gasto estimado). Um risco Serasa "relevante" ou
+    # "iminente" também rebaixa. Vale para qualquer tipo de ente com relatório.
+    serasa_res = dados.get("serasa")
+    if serasa_res and serasa_res.get("ok"):
+        sd = serasa_res.get("dados") or {}
+        r = sd.get("restricoes") or {}
+        motivos_serasa = []
+        if (r.get("protesto") or {}).get("consta"):
+            motivos_serasa.append("protesto nacional ativo no Serasa")
+        if (r.get("refin") or {}).get("consta"):
+            motivos_serasa.append("REFIN ativo no Serasa")
+        if (sd.get("nivel_risco") or "").lower() in ("relevante", "iminente"):
+            motivos_serasa.append(f"Serasa classifica o risco como {sd['nivel_risco']}")
+        total_restr = _restricoes_valor_total(sd)
+        gasto = sd.get("gasto_estimado_anual")
+        if total_restr and gasto and (total_restr / gasto * 100) >= 5.0:
+            motivos_serasa.append(
+                f"restrições no Serasa somam {_brl(total_restr)} "
+                f"({_pct_br(total_restr / gasto * 100)} do gasto estimado)"
+            )
+        for motivo in motivos_serasa:
+            if semaforo == "verde":
+                semaforo = "amarelo"
+            restricoes.append(f"{motivo} impede semáforo verde")
+
     # CAUC é a fonte autoritativa sobre estar ou não impedido de receber
     # transferências voluntárias da União - mais direto que inferir dos convênios.
-    obs = dados.get("observacoes_manuais", {})
-    if obs.get("ok") and (obs.get("dados") or {}).get("cauc_situacao") == "com_pendencias":
+    if obs.get("cauc_situacao") == "com_pendencias":
         if semaforo == "verde":
             semaforo = "amarelo"
         restricoes.append("pendências no CAUC (informado pelo analista) impedem semáforo verde")
@@ -629,29 +780,46 @@ def calcular_scorecard(dados: dict) -> dict:
     cobertura = round(possivel / sum(d["maximo"] for d in dimensoes) * 100)
 
     # Confiabilidade: um score alto sobre pouca informação passa falsa segurança.
-    # O caso crítico é quando falta o bloco de pagamento (o mais pesado, 45 pts),
-    # que é justamente a evidência direta de que o ente paga fornecedores - sem
-    # ele, o score vem de dimensões periféricas (CAPAG, porte, sanções) e não diz
-    # o que mais importa. Quando isso acontece, o score não é confiável e o
-    # semáforo não passa de amarelo, independentemente da pontuação.
-    bloco_pagamento_ausente = all(
-        d["pontos"] is None
-        for d in dimensoes
-        if d["dimensao"] in BLOCOS["Comportamento de pagamento"]
-    )
-    confiavel = cobertura >= 60 and not bloco_pagamento_ausente
-    if not confiavel and semaforo == "verde":
-        semaforo = "amarelo"
-    if bloco_pagamento_ausente:
-        restricoes.append(
-            "os demonstrativos fiscais (RGF/RREO) não foram localizados nas consultas automáticas "
-            "ao SICONFI, então o comportamento de pagamento - o bloco mais importante - não pôde "
-            "ser avaliado; o score reflete apenas dados periféricos e não deve ser lido como aprovação"
+    if tipo_ente == "cnpj":
+        # Entes por CNPJ não entregam RGF/RREO/CAPAG - a ausência desses blocos é
+        # esperada, não um defeito. Aqui a confiança depende do sinal principal:
+        # a consulta Serasa. Sem ela, o score vem só de cadastro e sanções.
+        bloco_pagamento_ausente = False
+        serasa_res = dados.get("serasa")
+        serasa_consultado = bool(serasa_res and serasa_res.get("ok"))
+        confiavel = serasa_consultado
+        if not serasa_consultado:
+            if semaforo == "verde":
+                semaforo = "amarelo"
+            restricoes.append(
+                "a consulta Serasa - principal evidência de crédito para um ente que não entrega "
+                "demonstrativos fiscais - não foi realizada; o score reflete apenas dados cadastrais "
+                "e de sanções e não deve ser lido como avaliação de crédito"
+            )
+    else:
+        # O caso crítico é quando falta o bloco de pagamento (o mais pesado, 45 pts),
+        # que é justamente a evidência direta de que o ente paga fornecedores - sem
+        # ele, o score vem de dimensões periféricas (CAPAG, porte, sanções) e não diz
+        # o que mais importa. Quando isso acontece, o score não é confiável e o
+        # semáforo não passa de amarelo, independentemente da pontuação.
+        bloco_pagamento_ausente = all(
+            d["pontos"] is None
+            for d in dimensoes
+            if d["dimensao"] in BLOCOS["Comportamento de pagamento"]
         )
-    elif cobertura < 60:
-        restricoes.append(
-            f"cobertura de dados baixa ({cobertura}%): o score reflete informação parcial"
-        )
+        confiavel = cobertura >= 60 and not bloco_pagamento_ausente
+        if not confiavel and semaforo == "verde":
+            semaforo = "amarelo"
+        if bloco_pagamento_ausente:
+            restricoes.append(
+                "os demonstrativos fiscais (RGF/RREO) não foram localizados nas consultas automáticas "
+                "ao SICONFI, então o comportamento de pagamento - o bloco mais importante - não pôde "
+                "ser avaliado; o score reflete apenas dados periféricos e não deve ser lido como aprovação"
+            )
+        elif cobertura < 60:
+            restricoes.append(
+                f"cobertura de dados baixa ({cobertura}%): o score reflete informação parcial"
+            )
 
     # Ressalvas acompanham o semáforo sem rebaixá-lo: sinalizam o que merece
     # atenção mesmo quando os critérios de aprovação foram atendidos.

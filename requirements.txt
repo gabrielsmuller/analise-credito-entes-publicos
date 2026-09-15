@@ -8,3 +8,4 @@ python-dotenv>=1.0
 python-multipart>=0.0.12
 openpyxl>=3.1
 markdown>=3.7
+pdfminer.six>=20240706   # extração de texto do PDF do relatório Serasa

@@ -18,6 +18,18 @@ def resultado(fonte: str, dados=None, erro: str | None = None) -> dict:
     return {"fonte": fonte, "ok": erro is None, "dados": dados, "erro": erro}
 
 
+def nao_aplicavel(fonte: str, motivo: str) -> dict:
+    """Fonte que não faz sentido para o tipo de ente analisado.
+
+    Diferente de "indisponível" (a fonte existe mas falhou): aqui a fonte não se
+    aplica - p.ex. RGF/RREO/CAPAG não existem para uma autarquia ou universidade,
+    que não entrega demonstrativos fiscais ao SICONFI. Não penaliza o score (ok é
+    falso, então o scorecard trata como lacuna), mas a marca deixa a tela dizer
+    "não se aplica" em vez de "sem dado".
+    """
+    return {"fonte": fonte, "ok": False, "dados": None, "erro": motivo, "nao_aplicavel": True}
+
+
 # Teto de tempo por coletor. Uma fonte lenta ou pendurada (SICONFI instável, o
 # XLSX da CAPAG, o PNCP em 504) não pode travar a análise inteira: passado o
 # teto, ela vira "indisponível" e o resto segue. Generoso o bastante para não

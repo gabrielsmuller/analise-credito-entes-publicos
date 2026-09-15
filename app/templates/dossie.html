@@ -15,6 +15,10 @@
 {% set obs = d.observacoes_manuais.dados if d.observacoes_manuais else None %}
 {% set pag = d.pagamentos.dados if d.pagamentos and d.pagamentos.ok else None %}
 {% set caixa = pag.caixa_por_ano[0].nao_vinculados if pag and pag.caixa_por_ano else None %}
+{% set tipo_ente = d.tipo_ente or "municipio" %}
+{% set so_cnpj = tipo_ente == "cnpj" %}
+{% set tipo_orgao = d.tipo_orgao.dados.rotulo if d.tipo_orgao and d.tipo_orgao.ok else None %}
+{% set serasa = d.serasa.dados if d.serasa and d.serasa.ok else None %}
 
 {% macro barra_limite(rotulo, valor_bruto, limite, alerta) %}
   {# valores ausentes em análises antigas chegam como Undefined; normaliza antes de comparar #}
@@ -95,7 +99,9 @@
         {{ anel_score(analise.score, analise.semaforo) }}
       </div>
       <div>
-        <h2 style="margin:0 0 0.3rem">{{ analise.municipio }}/{{ analise.uf }}</h2>
+        <h2 style="margin:0 0 0.3rem">{{ analise.municipio }}{% if analise.uf %}/{{ analise.uf }}{% endif %}</h2>
+        {% if so_cnpj %}<div class="dica" style="margin:-0.15rem 0 0.4rem">
+          Ente público analisado por CNPJ{% if tipo_orgao %} · {{ tipo_orgao }}{% endif %}</div>{% endif %}
         <span class="semaforo {{ analise.semaforo }}">{{ analise.semaforo }}</span>
         {% if sc.classificacao_risco %}
         <span class="pill {{ sc.classificacao_risco.tom }}" style="margin-left:0.35rem"
@@ -148,6 +154,7 @@
   {% endif %}
 </div>
 
+{% if not so_cnpj %}
 <!-- ===== Indicadores-chave ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Indicadores-chave</h3>
@@ -231,6 +238,7 @@
   {% endif %}
 </div>
 
+{% endif %}
 <!-- ===== Scorecard ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Scorecard</h3>
@@ -289,6 +297,7 @@
 
 <h3 class="titulo-evidencias">Evidências coletadas</h3>
 
+{% if not so_cnpj %}
 <!-- ===== Comportamento de pagamento ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Comportamento de pagamento</h3>
@@ -375,6 +384,7 @@
   {% endif %}
 </div>
 
+{% endif %}
 <!-- ===== Transferências federais ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Repasses federais recebidos</h3>
@@ -406,6 +416,7 @@
   {% endif %}
 </div>
 
+{% if not so_cnpj %}
 <!-- ===== Convênios ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Convênios com a União</h3>
@@ -464,6 +475,7 @@
   {% endif %}
 </div>
 
+{% endif %}
 <!-- ===== Sanções (dentro do bloco de restrições) ===== -->
 <div class="cartao">
   <h4 class="subtitulo" style="margin-top:0">Sanções (CEIS / CNEP / CEPIM)</h4>
@@ -568,6 +580,7 @@
   {% endif %}
 </div>
 
+{% if not so_cnpj %}
 <!-- ===== Detalhamento fiscal ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Detalhamento fiscal</h3>
@@ -600,6 +613,85 @@
   {% endif %}
 </div>
 
+{% endif %}
+<!-- ===== Relatório Serasa ===== -->
+{% if serasa %}
+{% set nivel_tom = {"minimo":"bom","baixo":"bom","medio":"medio","relevante":"ruim","iminente":"ruim"} %}
+<div class="cartao">
+  <h3 class="titulo-secao">Relatório Serasa</h3>
+  <div class="grade-cards">
+    <div class="card-indicador destacado">
+      <span class="card-rotulo">Serasa Score</span>
+      <span class="card-valor">{{ serasa.score if serasa.score is not none else "-" }}<span class="score-max">/{{ serasa.score_max or 1000 }}</span></span>
+      {% if serasa.nivel_risco %}<span class="pill {{ nivel_tom.get(serasa.nivel_risco, 'medio') }}">risco {{ serasa.nivel_risco }}</span>{% endif %}
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Probabilidade de pagamento</span>
+      <span class="card-valor">{{ serasa.probabilidade_pagamento|pct if serasa.probabilidade_pagamento is not none else "-" }}</span>
+      <span class="card-nota">estimada pela Serasa</span>
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Pontualidade (12 meses)</span>
+      <span class="card-valor {{ 'destaque-bom' if serasa.pontualidade_pct is not none and serasa.pontualidade_pct >= 90 else '' }}">{{ serasa.pontualidade_pct|pct if serasa.pontualidade_pct is not none else "-" }}</span>
+      <span class="card-nota">{{ serasa.pontualidade_classe or "compromissos pagos em dia" }}</span>
+    </div>
+  </div>
+  {% if serasa.pratica_recomendada %}
+  <p class="dica" style="margin-top:0.6rem">Prática recomendada pela Serasa:
+    <strong>{{ serasa.pratica_recomendada }}</strong></p>
+  {% endif %}
+
+  <h4 class="subtitulo">Restrições financeiras</h4>
+  {% set nomes_restr = {"pefin":"PEFIN","refin":"REFIN","dividas_vencidas":"Dívidas vencidas","protesto":"Protesto nacional","cheques_sem_fundo":"Cheques sem fundo"} %}
+  <table>
+    <thead><tr><th>Tipo</th><th>Situação</th><th>Ocorrências</th><th>Valor</th><th>Período</th></tr></thead>
+    <tbody>
+      {% for chave, rotulo in nomes_restr.items() %}
+      {% set r = (serasa.restricoes or {}).get(chave) %}
+      <tr class="{{ 'linha-alerta' if r and r.consta else '' }}">
+        <td>{{ rotulo }}</td>
+        <td>{% if r and r.consta %}<span class="destaque-ruim">consta</span>{% else %}<span class="destaque-bom">nada consta</span>{% endif %}</td>
+        <td>{{ r.ocorrencias if r and r.consta else "-" }}</td>
+        <td>{{ r.valor|moeda if r and r.consta and r.valor is not none else "-" }}</td>
+        <td class="dica">{{ r.periodo if r and r.consta and r.periodo else "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if serasa.restricoes_valor_total %}
+  <p class="dica">Total em restrições: <strong>{{ serasa.restricoes_valor_total|moeda }}</strong>{% if serasa.gasto_estimado_anual %} —
+    {{ (serasa.restricoes_valor_total / serasa.gasto_estimado_anual * 100)|pct(2) }} do gasto anual estimado
+    ({{ serasa.gasto_estimado_anual|moeda_curta }}){% endif %}.</p>
+  {% endif %}
+
+  {% if serasa.ocorrencias %}
+  <h4 class="subtitulo">Ocorrências mais recentes</h4>
+  <table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Modalidade</th><th>Valor</th><th>Origem</th></tr></thead>
+    <tbody>
+      {% for o in serasa.ocorrencias[:10] %}
+      <tr>
+        <td>{{ o.data or "-" }}</td>
+        <td>{{ o.tipo or "-" }}</td>
+        <td class="dica">{{ o.modalidade or "-" }}</td>
+        <td>{{ o.valor|moeda if o.valor is not none else "-" }}</td>
+        <td class="dica">{{ o.origem or "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <p class="dica" style="margin-top:0.6rem">Fonte: relatório Serasa (SCC Check){% if serasa.data_consulta %},
+    consulta de {{ serasa.data_consulta }}{% endif %}. Dados extraídos do PDF anexado pelo analista.</p>
+</div>
+{% elif so_cnpj and d.serasa %}
+<div class="cartao">
+  <h3 class="titulo-secao">Relatório Serasa</h3>
+  <p class="aviso-erro" style="margin:0">Não foi possível ler o relatório Serasa anexado:
+    <code>{{ d.serasa.erro }}</code>. Sem ele, a análise fica sem sua principal evidência de crédito.</p>
+</div>
+{% endif %}
+
 <!-- ===== Cadastro e observações manuais ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Cadastro e verificações manuais</h3>
@@ -617,9 +709,10 @@
     <p class="dica indisponivel">{{ d.cnpj.erro if d.cnpj else "não consultado" }}</p>
   {% endif %}
 
-  <h4 class="subtitulo">Serasa (consulta manual)</h4>
-  {% if obs and obs.serasa %}<p class="texto-manual">{{ obs.serasa }}</p>
-  {% else %}<p class="dica indisponivel">Não informado pelo analista. Serasa não possui API pública - a consulta é manual.</p>{% endif %}
+  {% if obs and obs.serasa %}
+  <h4 class="subtitulo">Observações do analista sobre o Serasa</h4>
+  <p class="texto-manual">{{ obs.serasa }}</p>
+  {% endif %}
 
   <h4 class="subtitulo">CAUC (consulta manual)</h4>
   {% set cauc_sit = (obs.cauc_situacao if obs else none) or "nao_consultado" %}
@@ -643,6 +736,7 @@
     <thead><tr><th style="width:180px">Fonte</th><th style="width:90px">Status</th><th>Referência</th></tr></thead>
     <tbody>
       {% for chave, rotulo in [
+        ("serasa", "Serasa (relatório PDF)"),
         ("pagamentos", "SICONFI - caixa e restos a pagar"), ("capag", "CAPAG - Tesouro Nacional"),
         ("siconfi", "SICONFI - RGF/RREO"),
         ("transferencias", "Portal da Transparência - repasses"), ("convenios", "Portal da Transparência - convênios"),
@@ -651,10 +745,11 @@
       {% set f = d[chave] if chave in d else None %}
       <tr>
         <td>{{ rotulo }}</td>
-        <td>{% if f and f.ok %}<span class="tag-ok">coletado</span>{% else %}<span class="tag-falha">sem dado</span>{% endif %}</td>
+        <td>{% if f and f.ok %}<span class="tag-ok">coletado</span>{% elif f and f.nao_aplicavel %}<span class="tag-falha">não se aplica</span>{% else %}<span class="tag-falha">sem dado</span>{% endif %}</td>
         <td class="dica">
           {% if f and f.ok %}
-            {% if chave == "capag" %}{{ f.dados.referencia }}
+            {% if chave == "serasa" %}consulta de {{ f.dados.data_consulta or "-" }}
+            {% elif chave == "capag" %}{{ f.dados.referencia }}
             {% elif chave == "siconfi" %}{{ (f.dados.rgf.referencia if f.dados.rgf else "") }}{{ " · " ~ f.dados.rreo_orcamento.referencia if f.dados.rreo_orcamento else "" }}
             {% elif chave == "ibge" %}população {{ f.dados.ano_populacao }} · PIB {{ f.dados.ano_pib }}
             {% elif chave == "pagamentos" %}

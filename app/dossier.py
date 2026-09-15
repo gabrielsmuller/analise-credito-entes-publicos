@@ -8,6 +8,7 @@ Esta é a única parte do sistema que fala com uma IA - coletores, scorecard e
 páginas não dependem de provedor.
 """
 import json
+import re
 
 from .config import ANTHROPIC_MODEL, LLM_PROVIDER, OPENAI_MODEL
 
@@ -87,17 +88,44 @@ empenho, a dotação orçamentária e o cronograma de liquidação e pagamento d
 """
 
 
-def _montar_prompt(municipio: str, uf: str, dados: dict, scorecard: dict, observacoes: dict) -> str:
+# Instrução extra quando o ente é avaliado só por CNPJ (autarquia, universidade,
+# consórcio, fundação, empresa pública). Esses entes não entregam RGF/RREO ao
+# SICONFI nem têm CAPAG, então boa parte da estrutura padrão do dossiê não se
+# aplica e a consulta Serasa passa a ser o principal sinal de crédito.
+NOTA_ENTE_CNPJ = """ATENÇÃO - TIPO DE ENTE: este NÃO é um município. É um ente público avaliado por \
+CNPJ (autarquia, universidade, consórcio público, fundação ou empresa pública) que NÃO entrega \
+demonstrativos fiscais próprios ao SICONFI e NÃO possui nota CAPAG. Portanto:
+- NÃO trate a ausência de RGF/RREO, CAPAG, caixa, restos a pagar ou limites da LRF como falha ou \
+lacuna preocupante: essas fontes simplesmente não se aplicam a este tipo de ente. No máximo, diga \
+em uma frase que não são aplicáveis.
+- A PRINCIPAL evidência de crédito aqui é o RELATÓRIO SERASA, em `dados_coletados.serasa.dados` \
+(Serasa Score e nível de risco, probabilidade de pagamento, pontualidade de pagamento dos últimos \
+12 meses, e restrições: PEFIN/REFIN/dívidas vencidas/protestos/cheques, com valores e ocorrências). \
+Dê peso central a ele no resumo executivo e na análise, citando os números concretos. Comente a \
+pontualidade de pagamento como o melhor indicador de que o ente honra compromissos. Contextualize \
+o valor das restrições frente ao gasto estimado (uma pendência pequena diante de um gasto anual \
+grande é imaterial). Se o relatório não tiver sido lido (`dados_coletados.serasa.ok` falso), diga \
+com clareza que falta a principal verificação e que o score não deve ser lido como avaliação de crédito.
+- OMITA as seções de comportamento de pagamento fiscal, CAPAG e limites da LRF. Use as seções que \
+fazem sentido: resumo executivo, análise do relatório Serasa (score, pontualidade, restrições), \
+cadastro do CNPJ, CAUC, sanções, repasses federais, contratos no PNCP, riscos e verificações \
+recomendadas.
+- Na busca de notícias da seção final, use o nome do ente (não "prefeitura")."""
+
+
+def _montar_prompt(
+    municipio: str, uf: str, dados: dict, scorecard: dict, observacoes: dict, tipo_ente: str
+) -> str:
     payload = {
-        "ente": {"municipio": municipio, "uf": uf},
+        "ente": {"nome": municipio, "uf": uf, "tipo": tipo_ente},
         "scorecard": scorecard,
         "dados_coletados": dados,
         "observacoes_manuais": observacoes,
     }
-    return (
-        "Redija o dossiê de análise de crédito com base nestes dados:\n\n"
-        + json.dumps(payload, ensure_ascii=False, indent=2)
-    )
+    cabecalho = "Redija o dossiê de análise de crédito com base nestes dados:"
+    if tipo_ente == "cnpj":
+        cabecalho = NOTA_ENTE_CNPJ + "\n\n" + cabecalho
+    return cabecalho + "\n\n" + json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 # O SDK da OpenAI usa 600s de timeout e 2 retries por padrão, o que numa falha
@@ -105,6 +133,81 @@ def _montar_prompt(municipio: str, uf: str, dados: dict, scorecard: dict, observ
 # Limitamos a algo que o setor tolera: 180s por tentativa, 1 retry.
 IA_TIMEOUT = 180.0
 IA_RETRIES = 1
+
+
+# --- Extração estruturada do relatório Serasa -----------------------------
+# A IA lê o texto do PDF e devolve os campos em JSON; o cálculo do score continua
+# determinístico (scoring.py) sobre esses campos. A IA é a "leitora" do relatório,
+# não participa da fórmula - só transcreve números que já estão no documento.
+SYSTEM_SERASA = """Você extrai dados de um relatório de crédito Serasa (formato SCC Check) e \
+devolve APENAS um JSON válido, sem texto ao redor. Transcreva fielmente o que está no relatório - \
+nunca invente, estime ou calcule valores que não estejam escritos. Se um campo não aparecer no \
+texto, use null.
+
+Formato exato (use estas chaves):
+{
+  "cnpj": "só dígitos, 14 caracteres",
+  "razao_social": "string",
+  "situacao_cadastral": "ATIVA|INATIVA|SUSPENSA|BAIXADA|null",
+  "data_consulta": "AAAA-MM-DD ou null",
+  "score": inteiro 0-1000 ou null,
+  "score_max": inteiro (normalmente 1000) ou null,
+  "nivel_risco": "um de: minimo, baixo, medio, relevante, iminente (derive da legenda/interpretação do score) ou null",
+  "probabilidade_pagamento": número (porcentagem, ex.: 97.72) ou null,
+  "pratica_recomendada": "string (ex.: 'Venda a prazo') ou null",
+  "pontualidade_pct": número (porcentagem de compromissos pagos em dia) ou null,
+  "pontualidade_classe": "ALTA|MEDIA|BAIXA|null",
+  "gasto_estimado_anual": número (R$) ou null,
+  "restricoes": {
+    "pefin": {"consta": true/false, "ocorrencias": inteiro, "valor": número ou null, "periodo": "string ou null"},
+    "refin": {"consta": true/false, "ocorrencias": inteiro, "valor": número ou null, "periodo": "string ou null"},
+    "dividas_vencidas": {"consta": true/false, "ocorrencias": inteiro, "valor": número ou null, "periodo": "string ou null"},
+    "protesto": {"consta": true/false, "ocorrencias": inteiro, "valor": número ou null, "periodo": "string ou null"},
+    "cheques_sem_fundo": {"consta": true/false, "ocorrencias": inteiro, "valor": número ou null, "periodo": "string ou null"}
+  },
+  "restricoes_valor_total": número (soma dos valores das restrições que constam) ou null,
+  "ocorrencias": [{"data": "AAAA-MM-DD", "tipo": "PEFIN|REFIN|DIVIDA|PROTESTO", "modalidade": "string", "valor": número, "origem": "string"}]
+}
+
+Regras dos valores: números em formato brasileiro no PDF (ex.: "R$ 41.311,04") devem virar float \
+41311.04. "NÃO CONSTAM OCORRÊNCIAS" significa consta=false e ocorrencias=0. Em "ocorrencias" \
+inclua no máximo as 10 mais recentes listadas."""
+
+
+def _extrair_json(texto: str) -> dict:
+    """Isola e faz o parse do primeiro objeto JSON do texto do modelo."""
+    m = re.search(r"\{.*\}", texto, re.DOTALL)
+    if not m:
+        raise RuntimeError("o modelo não devolveu JSON na extração do relatório Serasa")
+    return json.loads(m.group(0))
+
+
+def extrair_serasa(texto_pdf: str) -> dict:
+    """Extrai os campos estruturados do texto do relatório Serasa via IA."""
+    prompt = "Extraia os dados do relatório Serasa a seguir:\n\n" + texto_pdf
+    if LLM_PROVIDER == "openai":
+        from openai import OpenAI
+
+        resp = OpenAI(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).chat.completions.create(
+            model=OPENAI_MODEL,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": SYSTEM_SERASA},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return _extrair_json(resp.choices[0].message.content or "")
+
+    import anthropic
+
+    with anthropic.Anthropic(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).messages.stream(
+        model=ANTHROPIC_MODEL,
+        max_tokens=4000,
+        system=SYSTEM_SERASA,
+        messages=[{"role": "user", "content": prompt}],
+    ) as stream:
+        msg = stream.get_final_message()
+    return _extrair_json("".join(b.text for b in msg.content if b.type == "text"))
 
 
 def _gerar_openai(prompt: str) -> str:
@@ -212,9 +315,16 @@ def responder_pergunta(
     return "".join(b.text for b in msg.content if b.type == "text")
 
 
-def gerar_dossie(municipio: str, uf: str, dados: dict, scorecard: dict, observacoes_manuais: dict) -> str:
+def gerar_dossie(
+    municipio: str,
+    uf: str,
+    dados: dict,
+    scorecard: dict,
+    observacoes_manuais: dict,
+    tipo_ente: str = "municipio",
+) -> str:
     """Devolve o dossiê em Markdown, redigido pelo provedor configurado."""
-    prompt = _montar_prompt(municipio, uf, dados, scorecard, observacoes_manuais)
+    prompt = _montar_prompt(municipio, uf, dados, scorecard, observacoes_manuais, tipo_ente)
     if LLM_PROVIDER == "openai":
         return _gerar_openai(prompt)
     if LLM_PROVIDER == "anthropic":

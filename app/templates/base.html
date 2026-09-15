@@ -21,8 +21,19 @@
     main { max-width: 960px; margin: 2rem auto; padding: 0 1.2rem; }
     .cartao { background: #fff; border: 1px solid var(--borda); border-radius: 10px; padding: 1.5rem; margin-bottom: 1.2rem; }
     label { display: block; font-weight: 600; margin: 0.9rem 0 0.3rem; font-size: 0.92rem; }
-    input[type=text], textarea { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--borda); border-radius: 6px; font: inherit; }
+    input[type=text], input[type=number], textarea, select { width: 100%; padding: 0.55rem 0.7rem; border: 1px solid var(--borda); border-radius: 6px; font: inherit; background: #fff; }
     textarea { min-height: 90px; resize: vertical; }
+    /* --- seletor de modo e campos do formulário --- */
+    .seletor-modo { display: inline-flex; border: 1px solid var(--borda); border-radius: 8px; overflow: hidden; margin: 0.2rem 0 1rem; }
+    .modo-opcao { background: #fff; color: var(--azul-claro); border: 0; padding: 0.5rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer; }
+    .modo-opcao + .modo-opcao { border-left: 1px solid var(--borda); }
+    .modo-opcao.ativo { background: var(--azul-claro); color: #fff; }
+    .linha-campos { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .linha-campos > div { flex: 1; min-width: 160px; }
+    .grupo-manual { border: 1px solid var(--borda); border-radius: 8px; padding: 0.4rem 1rem 1rem; margin: 1.2rem 0; }
+    .grupo-manual legend { font-weight: 600; color: var(--azul-claro); padding: 0 0.4rem; font-size: 0.92rem; }
+    input[type=file] { width: 100%; padding: 0.5rem; border: 1px dashed var(--borda); border-radius: 6px; font: inherit; background: #fafbfc; cursor: pointer; }
+    input[type=file]::file-selector-button { font: inherit; font-weight: 600; color: #fff; background: var(--azul-claro); border: 0; border-radius: 5px; padding: 0.4rem 0.8rem; margin-right: 0.8rem; cursor: pointer; }
     button.principal { background: var(--azul-claro); color: #fff; border: 0; border-radius: 6px; padding: 0.7rem 1.6rem; font: inherit; font-weight: 600; cursor: pointer; margin-top: 1.2rem; }
     button.principal:hover { background: var(--azul); }
     .semaforo { display: inline-block; padding: 0.25rem 0.9rem; border-radius: 999px; color: #fff; font-weight: 700; text-transform: uppercase; font-size: 0.85rem; }

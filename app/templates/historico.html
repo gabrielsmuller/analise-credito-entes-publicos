@@ -11,7 +11,7 @@
       <tr>
         <td>{{ a.id }}</td>
         <td>{{ a.criado_em }}</td>
-        <td>{{ a.municipio }}/{{ a.uf }}</td>
+        <td>{{ a.municipio }}{% if a.uf %}/{{ a.uf }}{% endif %}</td>
         <td>{{ a.score if a.score is not none else "-" }}</td>
         <td><span class="semaforo {{ a.semaforo }}">{{ a.semaforo }}</span></td>
         <td><a href="/dossie/{{ a.id }}">abrir dossiê</a></td>

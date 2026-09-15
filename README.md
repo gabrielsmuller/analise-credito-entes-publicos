@@ -1,8 +1,18 @@
 # Análise de Crédito - Entes Públicos
 
-App web interno para o setor de licitações: digita o município, o sistema coleta dados
+App web interno para o setor de licitações: informa o ente público, o sistema coleta dados
 públicos oficiais, calcula um scorecard de crédito e gera um dossiê com recomendação
 (verde/amarelo/vermelho) para decidir sobre pedidos grandes de entes públicos.
+
+Dois modos de análise:
+
+- **Município** — basta o nome; o CNPJ da prefeitura e todo o pipeline fiscal (SICONFI, CAPAG)
+  são resolvidos automaticamente.
+- **Outro ente (por CNPJ)** — autarquias, universidades, consórcios, fundações e empresas
+  públicas, que não entregam demonstrativos fiscais próprios ao SICONFI. Você **anexa o PDF do
+  relatório Serasa** (formato SCC Check); a IA lê os números (Serasa Score, pontualidade,
+  restrições) e o nome/CNPJ do próprio relatório, e a análise complementa com o que é indexado por
+  CNPJ (cadastro, sanções, repasses, PNCP). O relatório Serasa é a base do score.
 
 ![Análise de Crédito - Entes Públicos](docs/assets/app.png)
 
@@ -24,8 +34,12 @@ públicos oficiais, calcula um scorecard de crédito e gera um dossiê com recom
 As três consultas ao Portal da Transparência exigem a chave gratuita; sem ela o sistema
 funciona e marca essas seções como pendentes.
 
-Serasa e CAUC não têm API pública — o formulário tem campos manuais para colar o
-resultado dessas consultas, que entram no dossiê.
+Serasa e CAUC não têm API pública. O **relatório Serasa** entra como **PDF anexado** (formato SCC
+Check): a IA extrai os campos (Serasa Score e nível de risco, probabilidade de pagamento,
+pontualidade dos últimos 12 meses, restrições PEFIN/REFIN/dívidas/protestos com valores) e o
+cálculo do score roda de forma determinística sobre esses números. O **CAUC** continua manual
+(situação sem/com pendências). Protestos ou REFIN ativos no Serasa e pendências no CAUC impedem o
+semáforo verde.
 
 ## Instalação (Windows)
 
@@ -62,7 +76,8 @@ Para ver quais modelos a sua chave OpenAI acessa: `.\.venv\Scripts\python listar
 .\.venv\Scripts\uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Abra http://127.0.0.1:8000 — digite o município, selecione na lista e clique em **Gerar dossiê**.
+Abra http://127.0.0.1:8000 — escolha o modo (Município ou Outro ente por CNPJ), preencha e clique
+em **Gerar dossiê**.
 A análise leva de 1 a 5 minutos.
 
 > Para acessar de outras máquinas na rede local, troque `--host 127.0.0.1` por `--host 0.0.0.0` e
@@ -97,7 +112,8 @@ Outros detalhes:
 ## Como o score é calculado
 
 Todo o cálculo é determinístico e auditável em [app/scoring.py](app/scoring.py) — a IA
-não participa do cálculo, apenas redige o dossiê a partir dos números prontos:
+não participa da fórmula (pesos, faixas e semáforo são código), apenas redige o dossiê e, no caso
+do relatório Serasa em PDF, transcreve os números do documento para o scorecard pontuar:
 
 | Dimensão | Peso |
 |---|---|
@@ -112,6 +128,15 @@ não participa do cálculo, apenas redige o dossiê a partir dos números pronto
 | Sanções CEIS/CNEP/CEPIM | 8 |
 | Porte populacional | 4 |
 | PIB per capita | 3 |
+| Serasa Score / risco (quando há relatório) | 30 |
+| Pontualidade de pagamento — Serasa (quando há relatório) | 20 |
+| Restrições PEFIN/REFIN/protestos — Serasa (quando há relatório) | 20 |
+
+As três dimensões **Serasa** só entram quando há relatório em PDF. Nos entes analisados por
+CNPJ — que não têm dados fiscais — elas são o eixo do score, ao lado das sanções; a tabela acima
+(caixa, CAPAG, LRF, convênios, contexto) é a do modo município. As restrições do Serasa pontuam
+pela **materialidade**: o valor em aberto é comparado ao gasto anual estimado do relatório, então
+uma pendência pequena diante de um orçamento grande não derruba o score.
 
 O bloco de **comportamento de pagamento** (as quatro primeiras linhas, 45 pontos) pesa mais
 que a CAPAG (30). A razão: a CAPAG responde *"este ente pode tomar dívida nova com garantia

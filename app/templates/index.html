@@ -2,27 +2,56 @@
 {% block conteudo %}
 <div class="cartao">
   <h2 style="margin-top:0">Nova análise de crédito</h2>
-  <p class="dica">Digite o município. O CNPJ da prefeitura é resolvido automaticamente pelo registro
-  oficial do Tesouro, e os dados públicos (caixa, restos a pagar, CAPAG, SICONFI, convênios, PNCP)
-  são coletados em seguida. Serasa e CAUC são consultas manuais.</p>
 
-  <!-- timeout do cliente (9 min) acima do pior caso do servidor, para o indicador
-       nunca girar para sempre se algo externo travar de vez -->
+  <div class="seletor-modo" role="tablist">
+    <button type="button" class="modo-opcao ativo" data-modo="municipio">Município</button>
+    <button type="button" class="modo-opcao" data-modo="cnpj">Outro ente (por CNPJ)</button>
+  </div>
+
+  <!-- timeout do cliente (9 min) acima do pior caso do servidor; multipart para o upload do PDF -->
   <form id="form-analise" hx-post="/analisar" hx-indicator="#carregando"
-        hx-request='{"timeout": 540000}'>
-    <label for="busca-municipio">Município *</label>
-    <input type="text" id="busca-municipio" placeholder="ex.: Blumenau" autocomplete="off"
-           hx-get="/api/municipios" hx-trigger="input changed delay:300ms" hx-target="#sugestoes"
-           hx-vals='js:{q: document.getElementById("busca-municipio").value}' hx-swap="none">
-    <ul id="sugestoes" class="lista-sugestoes" style="display:none"></ul>
-    <div id="selecionado" class="dica" style="margin-top:0.4rem"></div>
-    <input type="hidden" name="cod_ibge" id="cod_ibge" required>
-    <input type="hidden" name="municipio" id="municipio">
-    <input type="hidden" name="uf" id="uf">
+        hx-encoding="multipart/form-data" hx-request='{"timeout": 540000}'>
+    <input type="hidden" name="tipo_ente" id="tipo_ente" value="municipio">
 
-    <label for="serasa">Resultado da consulta Serasa (manual, opcional)</label>
-    <textarea id="serasa" name="serasa" placeholder="Cole aqui o resumo da consulta feita no Serasa (score, pendências, protestos...)"></textarea>
+    <!-- ===== Modo município ===== -->
+    <div id="bloco-municipio">
+      <label for="busca-municipio">Município *</label>
+      <input type="text" id="busca-municipio" placeholder="ex.: Blumenau" autocomplete="off"
+             hx-get="/api/municipios" hx-trigger="input changed delay:300ms" hx-target="#sugestoes"
+             hx-vals='js:{q: document.getElementById("busca-municipio").value}' hx-swap="none">
+      <ul id="sugestoes" class="lista-sugestoes" style="display:none"></ul>
+      <div id="selecionado" class="dica" style="margin-top:0.4rem"></div>
+      <input type="hidden" name="cod_ibge" id="cod_ibge">
+      <input type="hidden" name="municipio" id="municipio">
+      <input type="hidden" name="uf" id="uf">
+    </div>
 
+    <!-- ===== Modo ente por CNPJ ===== -->
+    <div id="bloco-cnpj" style="display:none">
+      <label for="tipo_orgao">Tipo de órgão (opcional)</label>
+      <select id="tipo_orgao" name="tipo_orgao" disabled>
+        <option value="">Selecione</option>
+        <option>Autarquia</option>
+        <option>Universidade / instituto federal</option>
+        <option>Consórcio público</option>
+        <option>Fundação pública</option>
+        <option>Empresa pública / sociedade de economia mista</option>
+        <option>Órgão da administração direta</option>
+        <option>Outro</option>
+      </select>
+    </div>
+
+    <!-- ===== Relatório Serasa (PDF) - comum aos dois modos ===== -->
+    <fieldset class="grupo-manual">
+      <legend>Relatório Serasa (PDF)</legend>
+      <label for="relatorio_serasa" id="label-pdf">Anexar o PDF do relatório (SCC Check)</label>
+      <input type="file" id="relatorio_serasa" name="relatorio_serasa" accept="application/pdf,.pdf">
+
+      <label for="serasa">Observações do analista (opcional)</label>
+      <textarea id="serasa" name="serasa" placeholder="Qualquer observação sua sobre a consulta Serasa (contexto, ressalvas...)"></textarea>
+    </fieldset>
+
+    <!-- ===== CAUC ===== -->
     <label for="cauc_situacao">Situação no CAUC (manual)</label>
     <select id="cauc_situacao" name="cauc_situacao">
       <option value="nao_consultado">Não consultado</option>
@@ -47,11 +76,13 @@
 </div>
 
 <script>
-  // Se a requisição estourar o tempo ou falhar, mostra erro em vez de deixar o
-  // indicador girando para sempre.
   const form = document.getElementById("form-analise");
   const erroDiv = document.getElementById("erro-analise");
   const botao = form.querySelector("button.principal");
+  const inputTipo = document.getElementById("tipo_ente");
+  const blocoMunicipio = document.getElementById("bloco-municipio");
+  const blocoCnpj = document.getElementById("bloco-cnpj");
+  const inputPdf = document.getElementById("relatorio_serasa");
 
   function mostrarErro(msg) {
     erroDiv.textContent = msg;
@@ -61,14 +92,51 @@
   form.addEventListener("htmx:timeout", () =>
     mostrarErro("A análise demorou demais e foi interrompida - os portais do governo podem estar "
       + "instáveis agora. Tente novamente em alguns minutos."));
-  form.addEventListener("htmx:responseError", (e) =>
-    mostrarErro("Não foi possível concluir a análise (erro " + (e.detail.xhr.status || "?")
-      + "). Tente novamente."));
+  form.addEventListener("htmx:responseError", (e) => {
+    const msg = e.detail.xhr.getResponseHeader("X-Erro");
+    mostrarErro(msg || ("Não foi possível concluir a análise (erro "
+      + (e.detail.xhr.status || "?") + "). Tente novamente."));
+  });
   form.addEventListener("htmx:sendError", () =>
     mostrarErro("Falha de conexão com o servidor. Verifique se o serviço está no ar e tente de novo."));
-  form.addEventListener("htmx:beforeRequest", () => { erroDiv.style.display = "none"; });
 
-  // Autocomplete: interceptamos a resposta JSON do endpoint /api/municipios
+  // Validação por modo no beforeRequest do formulário (cancelar aqui impede o
+  // htmx de disparar a análise). A guarda evita afetar o autocomplete, cujo
+  // beforeRequest também borbulha até o formulário.
+  form.addEventListener("htmx:beforeRequest", (evt) => {
+    if (evt.detail.elt !== form) return;
+    let erro = null;
+    const temPdf = inputPdf.files && inputPdf.files.length > 0;
+    if (inputTipo.value === "cnpj") {
+      if (!temPdf) erro = "Anexe o PDF do relatório Serasa para analisar este ente.";
+    } else if (!document.getElementById("cod_ibge").value) {
+      erro = "Selecione um município na lista de sugestões.";
+    }
+    if (erro) { evt.preventDefault(); mostrarErro(erro); return; }
+    erroDiv.style.display = "none";
+  });
+
+  // --- Alternância de modo -------------------------------------------------
+  // Inputs do bloco oculto ficam disabled: não são enviados e não colidem.
+  function definirModo(modo) {
+    const ehCnpj = modo === "cnpj";
+    inputTipo.value = ehCnpj ? "cnpj" : "municipio";
+    blocoMunicipio.style.display = ehCnpj ? "none" : "";
+    blocoCnpj.style.display = ehCnpj ? "" : "none";
+    blocoMunicipio.querySelectorAll("input").forEach((el) => (el.disabled = ehCnpj));
+    blocoCnpj.querySelectorAll("input,select").forEach((el) => (el.disabled = !ehCnpj));
+    document.getElementById("label-pdf").textContent = ehCnpj
+      ? "Anexar o PDF do relatório (SCC Check) *"
+      : "Anexar o PDF do relatório (SCC Check)";
+    document.querySelectorAll(".modo-opcao").forEach((b) =>
+      b.classList.toggle("ativo", b.dataset.modo === modo));
+    erroDiv.style.display = "none";
+  }
+  document.querySelectorAll(".modo-opcao").forEach((b) =>
+    b.addEventListener("click", () => definirModo(b.dataset.modo)));
+  definirModo("municipio");
+
+  // Autocomplete de municípios: interceptamos a resposta JSON de /api/municipios
   document.body.addEventListener("htmx:beforeSwap", function (evt) {
     if (!evt.detail.xhr.responseURL.includes("/api/municipios")) return;
     evt.detail.shouldSwap = false;
@@ -77,29 +145,23 @@
     try { municipios = JSON.parse(evt.detail.xhr.responseText); } catch (e) {}
     lista.innerHTML = "";
     lista.style.display = municipios.length ? "block" : "none";
-    for (const m of municipios) {
+    for (const mun of municipios) {
       const li = document.createElement("li");
-      li.textContent = `${m.nome} - ${m.uf}`;
+      li.textContent = `${mun.nome} - ${mun.uf}`;
       li.onclick = () => {
-        document.getElementById("cod_ibge").value = m.cod_ibge;
-        document.getElementById("municipio").value = m.nome;
-        document.getElementById("uf").value = m.uf;
-        document.getElementById("busca-municipio").value = `${m.nome} - ${m.uf}`;
-        const cnpjFmt = m.cnpj
-          ? m.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")
+        document.getElementById("cod_ibge").value = mun.cod_ibge;
+        document.getElementById("municipio").value = mun.nome;
+        document.getElementById("uf").value = mun.uf;
+        document.getElementById("busca-municipio").value = `${mun.nome} - ${mun.uf}`;
+        const cnpjFmt = mun.cnpj
+          ? mun.cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, "$1.$2.$3/$4-$5")
           : null;
         document.getElementById("selecionado").innerHTML = cnpjFmt
-          ? `✓ <strong>${m.nome}/${m.uf}</strong> - IBGE ${m.cod_ibge} - CNPJ da prefeitura <strong>${cnpjFmt}</strong> (Tesouro Nacional)`
-          : `✓ <strong>${m.nome}/${m.uf}</strong> - IBGE ${m.cod_ibge}`;
+          ? `✓ <strong>${mun.nome}/${mun.uf}</strong> - IBGE ${mun.cod_ibge} - CNPJ da prefeitura <strong>${cnpjFmt}</strong> (Tesouro Nacional)`
+          : `✓ <strong>${mun.nome}/${mun.uf}</strong> - IBGE ${mun.cod_ibge}`;
         lista.style.display = "none";
       };
       lista.appendChild(li);
-    }
-  });
-  document.getElementById("form-analise").addEventListener("submit", function (evt) {
-    if (!document.getElementById("cod_ibge").value) {
-      evt.preventDefault();
-      alert("Selecione um município na lista de sugestões.");
     }
   });
 </script>
