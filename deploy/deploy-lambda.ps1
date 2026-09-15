@@ -31,7 +31,12 @@ Write-Host "=== 2. instalando dependencias (wheels Linux cp312) ===" -Foreground
 if ($LASTEXITCODE -ne 0) { throw "pip install falhou" }
 
 Write-Host "=== 3. copiando app/ e gerando o zip ===" -ForegroundColor Cyan
-& $Py - $Raiz $Pacote $Zip @'
+# O empacotador vai para um .py temporario e roda como arquivo. Passar o script
+# por stdin (python -) via here-string do PowerShell e fragil: dependendo de como
+# o .ps1 e invocado, o here-string chega como argumento e o Python abre no modo
+# interativo sem gerar o zip. Gravar em arquivo evita esse problema.
+$Empacotador = Join-Path $Build "empacotar.py"
+@'
 import shutil, os, sys, zipfile
 raiz, pacote, zip_path = sys.argv[1], sys.argv[2], sys.argv[3]
 dst = os.path.join(pacote, "app")
@@ -48,7 +53,8 @@ with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             full = os.path.join(root, f)
             z.write(full, os.path.relpath(full, pacote).replace("\\", "/"))
 print("zip:", round(os.path.getsize(zip_path) / 1e6, 1), "MB")
-'@
+'@ | Set-Content -Encoding UTF8 $Empacotador
+& $Py $Empacotador $Raiz $Pacote $Zip
 if ($LASTEXITCODE -ne 0) { throw "empacotamento falhou" }
 
 Write-Host "=== 4. atualizando a funcao Lambda ===" -ForegroundColor Cyan
