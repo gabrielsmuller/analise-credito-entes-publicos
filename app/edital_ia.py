@@ -106,9 +106,6 @@ Formato exato:
   "prazo_pagamento_dias": inteiro ou null,
   "garantia_meses": inteiro ou null,
   "fonte_recursos": "string ou null",
-  "exigencias_habilitacao": ["documentos e requisitos de habilitação, um por item"],
-  "exigencias_tecnicas": ["requisitos do produto: eficiência, voltagem, marca, amostra, catálogo..."],
-  "penalidades": ["multas e sanções relevantes, com percentuais"],
   "prazo_impugnacao_dias_uteis": inteiro (ex.: "até 3 dias úteis antes da sessão" -> 3) ou null,
   "prazo_esclarecimento_dias_uteis": inteiro ou null,
   "checklist": {

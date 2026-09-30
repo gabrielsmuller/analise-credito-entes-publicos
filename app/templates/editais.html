@@ -4,12 +4,11 @@
 <div class="cartao">
   <h2 style="margin-top:0">Analisar edital <span class="pill medio" style="font-size:0.7rem; vertical-align:middle">piloto</span></h2>
 
-  <form id="form-edital" hx-post="/editais/analisar" hx-encoding="multipart/form-data"
-        hx-indicator="#carregando" hx-request='{"timeout": 120000}'>
+  <form id="form-edital">
     <label for="arquivo">PDF do edital *</label>
-    <input type="file" id="arquivo" name="arquivo" accept="application/pdf,.pdf">
-    <button type="submit" class="principal">Analisar edital</button>
-    <div id="carregando" class="indicador-carregando">⏳ Enviando o edital...</div>
+    <input type="file" id="arquivo" accept="application/pdf,.pdf">
+    <button type="submit" class="principal" id="btn-edital">Analisar edital</button>
+    <div id="progresso-edital" class="dica" style="display:none; margin-top:0.8rem; font-weight:600; color:var(--azul-claro)"></div>
     <div id="erro-edital" class="aviso-erro" style="display:none; margin-top:1rem"></div>
   </form>
 </div>
@@ -50,20 +49,65 @@
   {% endif %}
 </div>
 
+<!-- pdf.js: o texto é extraído aqui no navegador e só ele é enviado, então o
+     tamanho do PDF (imagens, anexos escaneados) não esbarra no limite de upload -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
-  const formEd = document.getElementById("form-edital");
-  const erroEd = document.getElementById("erro-edital");
-  function erroEdital(msg) { erroEd.textContent = msg; erroEd.style.display = "block"; }
-  formEd.addEventListener("htmx:beforeRequest", (evt) => {
-    if (evt.detail.elt !== formEd) return;
-    const arq = document.getElementById("arquivo");
-    if (!arq.files || !arq.files.length) { evt.preventDefault(); erroEdital("Anexe o PDF do edital."); return; }
-    erroEd.style.display = "none";
+(() => {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  const form = document.getElementById("form-edital");
+  const arquivo = document.getElementById("arquivo");
+  const botao = document.getElementById("btn-edital");
+  const progresso = document.getElementById("progresso-edital");
+  const erro = document.getElementById("erro-edital");
+
+  function falhar(msg) {
+    progresso.style.display = "none";
+    erro.textContent = msg; erro.style.display = "block";
+    botao.disabled = false;
+  }
+  function mostrar(msg) { progresso.textContent = msg; progresso.style.display = "block"; }
+
+  async function extrairTexto(arq) {
+    const pdf = await pdfjsLib.getDocument({ data: await arq.arrayBuffer() }).promise;
+    const paginas = [];
+    for (let n = 1; n <= pdf.numPages; n++) {
+      mostrar(`⏳ Lendo o PDF: página ${n} de ${pdf.numPages}...`);
+      const conteudo = await (await pdf.getPage(n)).getTextContent();
+      paginas.push(conteudo.items.map(i => i.str + (i.hasEOL ? "\n" : "")).join(""));
+    }
+    return paginas.join("\f");  // form feed separa páginas, como no extrator do servidor
+  }
+
+  form.addEventListener("submit", async (evt) => {
+    evt.preventDefault();
+    erro.style.display = "none";
+    const arq = arquivo.files && arquivo.files[0];
+    if (!arq) return falhar("Anexe o PDF do edital.");
+    botao.disabled = true;
+    let texto;
+    try {
+      texto = await extrairTexto(arq);
+    } catch (e) {
+      return falhar("Não foi possível ler o PDF: " + (e.message || e));
+    }
+    if (texto.replace(/\s/g, "").length < 500) {
+      return falhar("O PDF não tem texto selecionável (parece digitalizado como imagem). "
+        + "Baixe a versão em texto do edital no portal da licitação.");
+    }
+    mostrar("⏳ Enviando o edital para análise...");
+    const corpo = new FormData();
+    corpo.append("texto", texto);
+    corpo.append("arquivo_nome", arq.name);
+    try {
+      const resp = await fetch("/editais/analisar", { method: "POST", body: corpo });
+      if (!resp.ok) return falhar(resp.headers.get("X-Erro") || `Não foi possível enviar o edital (erro ${resp.status}).`);
+      window.location.href = resp.url;  // o servidor redireciona para a página de acompanhamento
+    } catch (e) {
+      falhar("Falha de conexão com o servidor.");
+    }
   });
-  formEd.addEventListener("htmx:responseError", (e) =>
-    erroEdital(e.detail.xhr.getResponseHeader("X-Erro") || ("Não foi possível enviar o edital (erro "
-      + (e.detail.xhr.status || "?") + ").")));
-  formEd.addEventListener("htmx:sendError", () => erroEdital("Falha de conexão com o servidor."));
-  formEd.addEventListener("htmx:timeout", () => erroEdital("O envio demorou demais. Tente novamente."));
+})();
 </script>
 {% endblock %}

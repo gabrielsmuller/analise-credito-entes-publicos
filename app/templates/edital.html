@@ -199,9 +199,59 @@
 </div>
 {% endif %}
 
+<!-- ===== Matriz de exigências ===== -->
+{% if matriz or e.exigencias_erro %}
+<div class="cartao" id="matriz">
+  <h3 class="titulo-secao">Exigências do edital</h3>
+  {% if e.exigencias_erro %}
+    <div class="aviso-erro">A extração completa das exigências falhou: <code>{{ e.exigencias_erro }}</code>.
+      Use "Reanalisar edital" no fim da página.</div>
+  {% endif %}
+  {% if matriz %}
+  <p style="margin:0 0 0.8rem">
+    <strong>{{ matriz.total }}</strong> exigências encontradas ·
+    <span class="pill ruim" title="Descumprir desclassifica a proposta, inabilita o licitante ou encerra o contrato">{{ matriz.graves }} eliminatória{{ 's' if matriz.graves != 1 else '' }}</span>
+    {% if matriz.nao_localizadas %}· <span class="pill medio">{{ matriz.nao_localizadas }} não localizada{{ 's' if matriz.nao_localizadas != 1 else '' }} no texto</span>{% endif %}
+  </p>
+  <div class="filtro-matriz">
+    <input type="text" id="busca-exigencia" placeholder="Buscar exigência (ex.: balanço, R32, atestado, multa)...">
+    <label class="so-graves"><input type="checkbox" id="so-graves"> só as eliminatórias</label>
+  </div>
+  {% for g in matriz.grupos %}
+  <details class="grupo-exigencias" data-grupo>
+    <summary><strong>{{ g.rotulo }}</strong> <span class="dica contagem">({{ g.exigencias|length }})</span></summary>
+    <table>
+      <tbody>
+        {% for x in g.exigencias %}
+        <tr class="linha-exigencia" data-grave="{{ 1 if x.grave else 0 }}">
+          <td>
+            {% if x.item %}<span class="pill neutro">item {{ x.item }}</span> {% endif %}{{ x.exigencia }}
+            {% if x.consequencia %}<br><span class="pill {{ 'ruim' if x.grave else 'neutro' }}" style="margin-top:0.25rem">{{ x.consequencia }}</span>{% endif %}
+          </td>
+          <td class="dica" style="width:95px">{{ x.clausulas|join(", ") if x.clausulas else "-" }}</td>
+          <td class="dica" style="width:52px">{{ ("p. " ~ x.pagina) if x.pagina else "" }}</td>
+          <td style="width:28px; text-align:center" title="{{ x.trecho or '' }}">
+            {%- if x.verificacao == "verificado" -%}<span class="verif ok">✓</span>
+            {%- elif x.verificacao == "aproximado" -%}<span class="verif aprox">≈</span>
+            {%- else -%}<span class="verif falta">!</span>{%- endif -%}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </details>
+  {% endfor %}
+  <p class="dica" style="margin-bottom:0">Lista extraída pela IA lendo o edital em partes, uma exigência
+    por linha. Cada linha traz o trecho literal (passe o mouse no símbolo): <span class="verif ok">✓</span>
+    trecho conferido no texto do edital · <span class="verif aprox">≈</span> conferido com pequenas diferenças ·
+    <span class="verif falta">!</span> trecho não encontrado - confira no edital antes de confiar.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <!-- ===== Condições e exigências ===== -->
 <div class="cartao">
-  <h3 class="titulo-secao">Condições e exigências</h3>
+  <h3 class="titulo-secao">Condições e pontos de atenção</h3>
   <table style="margin-bottom:1rem">
     <tbody>
       <tr><td>Garantia exigida</td><td>{{ (e.garantia_meses ~ " meses") if e.garantia_meses is not none else "-" }}</td></tr>
@@ -253,5 +303,39 @@
   .bloco-lista summary { cursor: pointer; }
   .bloco-lista ul { margin: 0.6rem 0 0.2rem; padding-left: 1.2rem; }
   .bloco-lista li { margin: 0.25rem 0; font-size: 0.92rem; }
+  .grupo-exigencias { border: 1px solid var(--borda); border-radius: 8px; padding: 0.55rem 0.9rem; margin: 0 0 0.5rem; }
+  .grupo-exigencias summary { cursor: pointer; }
+  .grupo-exigencias table { margin-top: 0.5rem; }
+  .grupo-exigencias td { vertical-align: top; font-size: 0.9rem; }
+  .filtro-matriz { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.8rem; }
+  .filtro-matriz input[type=text] { flex: 1; min-width: 220px; }
+  .so-graves { display: flex; align-items: center; gap: 0.35rem; margin: 0; font-weight: 400; }
+  .verif { font-weight: 700; cursor: help; }
+  .verif.ok { color: var(--verde); } .verif.aprox { color: var(--amarelo); } .verif.falta { color: var(--vermelho); }
 </style>
+<script>
+(() => {
+  const busca = document.getElementById("busca-exigencia");
+  const soGraves = document.getElementById("so-graves");
+  if (!busca) return;
+  const norm = t => t.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  function filtrar() {
+    const termo = norm(busca.value.trim());
+    const graves = soGraves.checked;
+    document.querySelectorAll("[data-grupo]").forEach(g => {
+      let visiveis = 0;
+      g.querySelectorAll(".linha-exigencia").forEach(l => {
+        const ok = (!termo || norm(l.textContent).includes(termo)) && (!graves || l.dataset.grave === "1");
+        l.style.display = ok ? "" : "none";
+        if (ok) visiveis++;
+      });
+      g.style.display = visiveis ? "" : "none";
+      g.querySelector(".contagem").textContent = `(${visiveis})`;
+      g.open = !!(termo || graves) && visiveis > 0;
+    });
+  }
+  busca.addEventListener("input", filtrar);
+  soGraves.addEventListener("change", filtrar);
+})();
+</script>
 {% endblock %}

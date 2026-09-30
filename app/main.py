@@ -23,6 +23,7 @@ from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
 from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
+from .edital_exigencias import extrair_exigencias, resumir_exigencias
 from .edital_ia import analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
@@ -299,7 +300,20 @@ async def _processar_edital(job_id: str, edital_id: int) -> None:
         edital = db.buscar_edital(edital_id)
         if edital is None:
             raise ValueError(f"edital {edital_id} não encontrado")
-        dados = await asyncio.to_thread(analisar_edital, edital["texto"])
+        # leitura geral e matriz de exigências rodam em paralelo (chamadas independentes)
+        geral, matriz = await asyncio.gather(
+            asyncio.to_thread(analisar_edital, edital["texto"]),
+            asyncio.to_thread(extrair_exigencias, edital["texto"]),
+            return_exceptions=True,
+        )
+        if isinstance(geral, Exception):
+            raise geral
+        dados = geral
+        if isinstance(matriz, Exception):
+            # a matriz falhar não descarta a leitura geral: fica registrado na tela
+            dados["exigencias_erro"] = f"{type(matriz).__name__}: {matriz}"
+        else:
+            dados["exigencias"] = matriz
         resumo_md = dados.pop("visao_geral_md", None)
         db.concluir_edital(edital_id, dados, resumo_md)
         db.atualizar_job(job_id, "pronto", analise_id=edital_id)
@@ -526,25 +540,39 @@ async def editais(request: Request):
     return templates.TemplateResponse(request, "editais.html", {"editais": lista})
 
 
+# O navegador extrai o texto do PDF (pdf.js) e envia só o texto: o API Gateway ->
+# Lambda aceita no máximo 6 MB por requisição (em base64), e editais com imagens
+# passam fácil disso (o de Brotas de Macaúbas tem 7,3 MB e ~130 KB de texto).
+# O upload do arquivo continua aceito para uso local e testes.
+_MAX_TEXTO_EDITAL = 3_000_000
+
+
 @app.post("/editais/analisar")
-async def analisar_edital_upload(request: Request, arquivo: UploadFile | None = File(None)):
-    if arquivo is None or not (arquivo.filename or "").strip():
+async def analisar_edital_upload(
+    request: Request,
+    texto: str = Form(""),
+    arquivo_nome: str = Form(""),
+    arquivo: UploadFile | None = File(None),
+):
+    if texto.strip():
+        if len(texto) > _MAX_TEXTO_EDITAL:
+            return _erro_form(request, "O edital é longo demais para análise (texto acima de 3 milhões de caracteres).")
+        nome = (arquivo_nome or "edital.pdf").strip()[:200]
+    elif arquivo is not None and (arquivo.filename or "").strip():
+        conteudo = await arquivo.read()
+        try:
+            texto = await asyncio.to_thread(extrair_texto_pdf, conteudo)
+        except ValueError as exc:
+            return _erro_form(request, str(exc))
+        nome = arquivo.filename
+    else:
         return _erro_form(request, "Anexe o PDF do edital.")
-    conteudo = await arquivo.read()
-    # API Gateway -> Lambda aceita até 6 MB por requisição, e o upload chega em
-    # base64 (+33%). Acima disso a requisição falharia antes de chegar aqui.
-    if len(conteudo) > 4 * 1024 * 1024:
-        return _erro_form(request, "O PDF é grande demais (máx. 4 MB). Envie só o edital e o termo de referência.")
-    try:
-        texto = await asyncio.to_thread(extrair_texto_pdf, conteudo)
-    except ValueError as exc:
-        return _erro_form(request, str(exc))
     baixo = texto.lower()
     if sum(m in baixo for m in _MARCADORES_EDITAL) < 3:
         return _erro_form(request, "O PDF não parece um edital de licitação. Confira o arquivo.")
 
     # o texto vai para o banco já aqui; o worker recebe só o id (ver _disparar)
-    edital_id = db.criar_edital(arquivo.filename, texto)
+    edital_id = db.criar_edital(nome, texto)
     job_id = _disparar({"tipo": "edital", "edital_id": edital_id})
     url = f"/processando/{job_id}?tipo=edital"
     if request.headers.get("HX-Request"):
@@ -571,6 +599,7 @@ async def ver_edital(request: Request, edital_id: int):
             # análises anteriores ao checklist fixo não o têm: a tela oferece reanalisar
             "checklist": dados.get("checklist") if isinstance(dados.get("checklist"), list) else None,
             "conferencia": _conferir_itens(dados),
+            "matriz": resumir_exigencias(dados.get("exigencias")),
             "credito": _credito_do_orgao(dados),
             "mensagens": db.listar_mensagens_edital(edital_id),
         },

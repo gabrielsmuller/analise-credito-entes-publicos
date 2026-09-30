@@ -111,13 +111,23 @@ Outros detalhes:
 
 ## Análise de editais (piloto)
 
-Na aba **Editais**, anexe o PDF do edital: a IA lê o documento inteiro e devolve a visão geral,
-os itens (com conferência da soma contra o valor estimado), prazos, condições comerciais,
-exigências de habilitação e pontos de atenção. Há um **chat** sobre o edital, que cita as
-cláusulas, e uma **nota de atratividade** (0-10): a IA pontua seis critérios com justificativa e
-a nota final é a média ponderada calculada no código ([app/edital_ia.py](app/edital_ia.py)).
+Na aba **Editais**, anexe o PDF do edital. O texto é extraído no próprio navegador (pdf.js) e só
+ele é enviado, então o tamanho do PDF não importa. A análise tem três partes:
+
+- **Matriz de exigências** ([app/edital_exigencias.py](app/edital_exigencias.py)) — como cada
+  edital tem estrutura própria, o documento é lido em blocos de páginas, em paralelo, com a
+  instrução de listar *toda* exigência, uma por linha, em categorias fixas (habilitação,
+  especificação de produto por item, entrega, sanções...). O código funde as repetições (edital,
+  termo de referência e minuta repetem cláusulas) e **confere o trecho citado de cada exigência
+  contra o texto do edital**, calculando a página; o que não é localizado fica marcado.
+- **Checklist fixo** — as mesmas perguntas para qualquer edital (balanço, amostra, garantias,
+  registro de preços...), com prazos de esclarecimento e impugnação calculados em dias úteis.
+- **Visão geral, itens e nota de atratividade** (0-10: a IA pontua seis critérios e a média
+  ponderada é calculada no código, em [app/edital_ia.py](app/edital_ia.py)), mais um **chat**
+  sobre o edital que cita as cláusulas.
+
 Quando o órgão é um município, a página mostra a última análise de crédito dele ou oferece
-fazê-la. Limite: PDF de até 4 MB e com texto selecionável (edital escaneado não é lido).
+fazê-la. Limite: o PDF precisa ter texto selecionável (edital escaneado como imagem não é lido).
 
 ## Como o score é calculado
 
