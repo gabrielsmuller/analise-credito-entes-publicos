@@ -30,7 +30,7 @@
           <span class="dica">{{ e.numero or "" }}{% if e.objeto_resumo %} - {{ e.objeto_resumo }}{% endif %}</span>
         </td>
         <td>
-          {{ e.data_abertura or "-" }}
+          {{ e.data_abertura|data_br }}
           {% if ed.prazo %}<br><span class="pill {{ ed.prazo.tom }}">{{ ed.prazo.texto }}</span>{% endif %}
         </td>
         <td>{{ e.valor_estimado_total|moeda_curta if e.valor_estimado_total is not none else ("sigiloso" if e.valor_sigiloso else "-") }}</td>

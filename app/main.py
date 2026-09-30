@@ -23,7 +23,7 @@ from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
 from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
-from .edital_ia import analisar_edital, responder_pergunta_edital, situacao_prazo
+from .edital_ia import analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
 
@@ -80,6 +80,17 @@ templates.env.filters["moeda"] = filtro_moeda
 templates.env.filters["moeda_curta"] = filtro_moeda_curta
 templates.env.filters["numero"] = filtro_numero
 templates.env.filters["pct"] = filtro_pct
+
+
+def filtro_data_br(valor) -> str:
+    """AAAA-MM-DD (ou ISO com hora) -> DD/MM/AAAA; devolve o original se não reconhecer."""
+    texto = str(valor or "")
+    if len(texto) >= 10 and texto[4] == "-" and texto[7] == "-":
+        return f"{texto[8:10]}/{texto[5:7]}/{texto[:4]}"
+    return texto or "-"
+
+
+templates.env.filters["data_br"] = filtro_data_br
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -556,11 +567,23 @@ async def ver_edital(request: Request, edital_id: int):
             "e": dados,
             "resumo_html": resumo_html,
             "prazo": situacao_prazo(dados.get("data_abertura")),
+            "prazos": prazos_edital(dados),
+            # análises anteriores ao checklist fixo não o têm: a tela oferece reanalisar
+            "checklist": dados.get("checklist") if isinstance(dados.get("checklist"), list) else None,
             "conferencia": _conferir_itens(dados),
             "credito": _credito_do_orgao(dados),
             "mensagens": db.listar_mensagens_edital(edital_id),
         },
     )
+
+
+@app.post("/edital/{edital_id}/reanalisar")
+async def reanalisar_edital(request: Request, edital_id: int):
+    """Refaz a leitura da IA sobre o texto já guardado (sem novo upload). O chat é mantido."""
+    if db.buscar_edital(edital_id) is None:
+        return HTMLResponse("Edital não encontrado", status_code=404)
+    job_id = _disparar({"tipo": "edital", "edital_id": edital_id})
+    return RedirectResponse(f"/processando/{job_id}?tipo=edital", status_code=303)
 
 
 @app.post("/api/edital-chat/{edital_id}")

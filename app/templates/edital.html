@@ -45,7 +45,7 @@
   <div class="grade-cards" style="margin-top:1.2rem">
     <div class="card-indicador destacado">
       <span class="card-rotulo">Sessão pública</span>
-      <span class="card-valor">{{ e.data_abertura or "-" }}</span>
+      <span class="card-valor">{{ e.data_abertura|data_br }}</span>
       <span class="card-nota">
         {% if e.hora_abertura %}às {{ e.hora_abertura }} · {% endif %}
         {% if prazo %}<span class="pill {{ prazo.tom }}">{{ prazo.texto }}</span>{% endif %}
@@ -75,13 +75,55 @@
   {% endif %}
 </div>
 
+<!-- ===== Checklist fixo ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Checklist do edital</h3>
+  {% if prazos %}
+  <table style="margin-bottom:1rem">
+    <thead><tr><th>Prazo-limite antes da sessão</th><th>Data</th><th>Situação</th></tr></thead>
+    <tbody>
+      {% for pz in prazos %}
+      <tr>
+        <td>{{ pz.rotulo }} <span class="dica">({{ pz.dias_uteis }} {{ 'dia útil' if pz.dias_uteis == 1 else 'dias úteis' }} antes)</span></td>
+        <td><strong>{{ pz.data|data_br }}</strong></td>
+        <td><span class="pill {{ pz.tom }}">{{ pz.situacao }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if checklist %}
+  <table>
+    <thead><tr><th>Pergunta</th><th style="width:110px">Resposta</th><th>Detalhe</th><th style="width:90px">Cláusula</th></tr></thead>
+    <tbody>
+      {% for c in checklist %}
+      <tr>
+        <td>{{ c.pergunta }}</td>
+        <td>{% if c.info %}<span class="dica">-</span>{% else %}<span class="pill {{ c.tom }}">{{ c.resposta }}</span>{% endif %}</td>
+        <td class="{{ '' if c.info else 'dica' }}">{{ c.detalhe or ("" if not c.info else "não consta") }}</td>
+        <td class="dica">{{ c.referencia or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="dica" style="margin-bottom:0">Verde: favorável ao fornecedor · amarelo: exige atenção ·
+    cinza: informativo ou não consta no edital. Datas-limite contam só dias úteis (seg-sex), sem
+    feriados - confirme no portal quando estiver perto do prazo.</p>
+  {% else %}
+  <p class="dica" style="margin:0 0 0.6rem">Este edital foi lido antes do checklist fixo existir.</p>
+  <form method="post" action="/edital/{{ edital.id }}/reanalisar" style="margin:0">
+    <button class="principal" style="margin:0" type="submit">Reanalisar com checklist</button>
+  </form>
+  {% endif %}
+</div>
+
 <!-- ===== Crédito do órgão (ponte com a análise de crédito) ===== -->
 {% if e.orgao %}
 <div class="cartao">
   <h3 class="titulo-secao">Risco de crédito do órgão</h3>
   {% if credito %}
     <p style="margin:0">
-      Última análise de <strong>{{ credito.municipio }}/{{ credito.uf }}</strong> ({{ credito.criado_em[:10] }}):
+      Última análise de <strong>{{ credito.municipio }}/{{ credito.uf }}</strong> ({{ credito.criado_em|data_br }}):
       <span class="semaforo {{ credito.semaforo }}">{{ credito.semaforo }}</span>
       {% if credito.score is not none %}<strong style="margin-left:0.4rem">{{ credito.score }}</strong><span class="dica">/100</span>{% endif %}
       <a href="/dossie/{{ credito.id }}" style="margin-left:0.8rem">abrir dossiê →</a>
@@ -163,8 +205,10 @@
   <table style="margin-bottom:1rem">
     <tbody>
       <tr><td>Garantia exigida</td><td>{{ (e.garantia_meses ~ " meses") if e.garantia_meses is not none else "-" }}</td></tr>
+      {% if not checklist %}
       <tr><td>Instalação inclusa</td><td>{{ sim_nao(e.instalacao_inclusa) }}</td></tr>
       <tr><td>Exclusivo ME/EPP</td><td>{{ sim_nao(e.exclusivo_me_epp) }}</td></tr>
+      {% endif %}
       <tr><td>Fonte dos recursos</td><td>{{ e.fonte_recursos or "-" }}</td></tr>
     </tbody>
   </table>
@@ -172,12 +216,16 @@
   {{ lista("Exigências técnicas do produto", e.exigencias_tecnicas) }}
   {{ lista("Documentos de habilitação", e.exigencias_habilitacao) }}
   {{ lista("Penalidades", e.penalidades) }}
-  <p class="dica" style="margin-bottom:0">Arquivo: {{ edital.arquivo }} · analisado em {{ edital.criado_em.replace("T", " às ") }}</p>
+  <p class="dica" style="margin-bottom:0">Arquivo: {{ edital.arquivo }} · enviado em {{ edital.criado_em|data_br }}</p>
 </div>
 
 <div class="nao-imprimir" style="margin-bottom:2rem">
   <button class="principal" onclick="window.print()">🖨️ Salvar em PDF / Imprimir</button>
   <a href="/editais" style="margin-left:1rem">Editais</a>
+  <form method="post" action="/edital/{{ edital.id }}/reanalisar" style="display:inline; margin-left:1rem"
+        onsubmit="return confirm('Refazer a leitura do edital pela IA? O chat é mantido.')">
+    <button type="submit" style="background:none; border:0; color:var(--azul-claro); text-decoration:underline; cursor:pointer; font:inherit; padding:0">Reanalisar edital</button>
+  </form>
 </div>
 
 </div><!-- /coluna-analise -->
