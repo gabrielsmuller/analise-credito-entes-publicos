@@ -8,6 +8,9 @@ Tabela única (single-table), chave composta pk/sk:
     ANALISE#{id}           META         metadados + payloads gzip (dados/scorecard)
     ANALISE#{id}           MSG_SEQ      valor: último nº de mensagem daquela análise
     ANALISE#{id}           MSG#{seq}    uma mensagem do chat
+    CONTADOR               editais      valor: último id de edital emitido
+    EDITAL#{id}            META         texto do edital + análise da IA (gzip)
+    EDITAL#{id}            MSG_SEQ/MSG# chat do edital, no mesmo formato
 
 Os JSONs grandes (dados coletados e scorecard) são gravados comprimidos com
 gzip como atributo binário: cabe folgado no limite de 400 KB por item do
@@ -53,9 +56,9 @@ def _num(valor):
     return int(valor) if valor is not None else None
 
 
-def _proximo_id() -> int:
+def _proximo_id(contador: str = "analises") -> int:
     resp = _t().update_item(
-        Key={"pk": "CONTADOR", "sk": "analises"},
+        Key={"pk": "CONTADOR", "sk": contador},
         UpdateExpression="ADD valor :um",
         ExpressionAttributeValues={":um": 1},
         ReturnValues="UPDATED_NEW",
@@ -63,9 +66,9 @@ def _proximo_id() -> int:
     return int(resp["Attributes"]["valor"])
 
 
-def _proximo_seq(analise_id: int) -> int:
+def _proximo_seq(analise_id: int, prefixo: str = "ANALISE") -> int:
     resp = _t().update_item(
-        Key={"pk": f"ANALISE#{analise_id}", "sk": "MSG_SEQ"},
+        Key={"pk": f"{prefixo}#{analise_id}", "sk": "MSG_SEQ"},
         UpdateExpression="ADD valor :um",
         ExpressionAttributeValues={":um": 1},
         ReturnValues="UPDATED_NEW",
@@ -149,7 +152,8 @@ def salvar_mensagens(analise_id: int, mensagens: list[dict], autor: str | None =
 def contar_mensagens() -> dict[int, int]:
     """Quantas mensagens cada análise tem. Volume baixo: um scan resolve."""
     contagem: dict[int, int] = {}
-    kwargs = {"FilterExpression": Attr("sk").begins_with("MSG#")}
+    # só mensagens de análises: o chat dos editais usa o mesmo formato de sk
+    kwargs = {"FilterExpression": Attr("pk").begins_with("ANALISE#") & Attr("sk").begins_with("MSG#")}
     while True:
         resp = _t().scan(**kwargs)
         for i in resp.get("Items", []):
@@ -236,3 +240,92 @@ def listar_analises():
         }
         for i in itens
     ]
+
+
+# --- Editais (piloto de análise de editais) --------------------------------
+
+def criar_edital(arquivo: str, texto: str) -> int:
+    edital_id = _proximo_id("editais")
+    _t().put_item(
+        Item={
+            "pk": f"EDITAL#{edital_id}",
+            "sk": "META",
+            "id": edital_id,
+            "criado_em": datetime.now().isoformat(timespec="seconds"),
+            "arquivo": arquivo,
+            "texto_gz": _gz(texto),
+        }
+    )
+    return edital_id
+
+
+def concluir_edital(edital_id: int, dados: dict, resumo_md: str | None) -> None:
+    _t().update_item(
+        Key={"pk": f"EDITAL#{edital_id}", "sk": "META"},
+        UpdateExpression="SET dados_gz = :d, resumo_md = :r",
+        ExpressionAttributeValues={":d": _gz(dados), ":r": resumo_md},
+    )
+
+
+def buscar_edital(edital_id: int):
+    item = _t().get_item(Key={"pk": f"EDITAL#{edital_id}", "sk": "META"}).get("Item")
+    if not item:
+        return None
+    return {
+        "id": _num(item.get("id")),
+        "criado_em": item.get("criado_em"),
+        "arquivo": item.get("arquivo"),
+        "texto": _ungz(item["texto_gz"]),
+        "dados": _ungz(item["dados_gz"]) if item.get("dados_gz") else None,
+        "resumo_md": item.get("resumo_md"),
+    }
+
+
+def listar_editais() -> list[dict]:
+    """Metadados para a lista (o texto integral não é trazido). Volume baixo: scan."""
+    itens = []
+    kwargs = {
+        "FilterExpression": Attr("pk").begins_with("EDITAL#") & Attr("sk").eq("META"),
+        "ProjectionExpression": "id, criado_em, arquivo, dados_gz",
+    }
+    while True:
+        resp = _t().scan(**kwargs)
+        itens.extend(resp.get("Items", []))
+        if "LastEvaluatedKey" not in resp:
+            break
+        kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
+    itens.sort(key=lambda i: _num(i.get("id")) or 0, reverse=True)
+    return [
+        {
+            "id": _num(i.get("id")),
+            "criado_em": i.get("criado_em"),
+            "arquivo": i.get("arquivo"),
+            "dados": _ungz(i["dados_gz"]) if i.get("dados_gz") else None,
+        }
+        for i in itens
+    ]
+
+
+def listar_mensagens_edital(edital_id: int) -> list[dict]:
+    resp = _t().query(
+        KeyConditionExpression=Key("pk").eq(f"EDITAL#{edital_id}") & Key("sk").begins_with("MSG#")
+    )
+    return [
+        {"papel": i["papel"], "conteudo": i["conteudo"], "criado_em": i.get("criado_em"), "autor": i.get("autor")}
+        for i in resp.get("Items", [])
+    ]
+
+
+def salvar_mensagens_edital(edital_id: int, mensagens: list[dict], autor: str | None = None) -> None:
+    for m in mensagens:
+        seq = _proximo_seq(edital_id, prefixo="EDITAL")
+        _t().put_item(
+            Item={
+                "pk": f"EDITAL#{edital_id}",
+                "sk": f"MSG#{seq:08d}",
+                "papel": m["papel"],
+                "conteudo": m["conteudo"],
+                "criado_em": datetime.now().isoformat(timespec="seconds"),
+                "autor": autor,
+            }
+        )

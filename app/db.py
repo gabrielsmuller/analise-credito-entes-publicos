@@ -11,6 +11,12 @@ from .config import USAR_DYNAMO
 if USAR_DYNAMO:
     from .db_dynamo import (
         atualizar_job,
+        buscar_edital,
+        concluir_edital,
+        criar_edital,
+        listar_editais,
+        listar_mensagens_edital,
+        salvar_mensagens_edital,
         buscar_analise,
         buscar_job,
         contar_mensagens,
@@ -23,6 +29,12 @@ if USAR_DYNAMO:
 else:
     from .db_sqlite import (
         atualizar_job,
+        buscar_edital,
+        concluir_edital,
+        criar_edital,
+        listar_editais,
+        listar_mensagens_edital,
+        salvar_mensagens_edital,
         buscar_analise,
         buscar_job,
         contar_mensagens,
@@ -43,4 +55,10 @@ __all__ = [
     "criar_job",
     "buscar_job",
     "atualizar_job",
+    "buscar_edital",
+    "concluir_edital",
+    "criar_edital",
+    "listar_editais",
+    "listar_mensagens_edital",
+    "salvar_mensagens_edital",
 ]

@@ -109,6 +109,16 @@ Outros detalhes:
   entra na sequência da análise.
 - Caches locais em `data/`: base CAPAG (7 dias) e registro de municípios (30 dias).
 
+## Análise de editais (piloto)
+
+Na aba **Editais**, anexe o PDF do edital: a IA lê o documento inteiro e devolve a visão geral,
+os itens (com conferência da soma contra o valor estimado), prazos, condições comerciais,
+exigências de habilitação e pontos de atenção. Há um **chat** sobre o edital, que cita as
+cláusulas, e uma **nota de atratividade** (0-10): a IA pontua seis critérios com justificativa e
+a nota final é a média ponderada calculada no código ([app/edital_ia.py](app/edital_ia.py)).
+Quando o órgão é um município, a página mostra a última análise de crédito dele ou oferece
+fazê-la. Limite: PDF de até 4 MB e com texto selecionável (edital escaneado não é lido).
+
 ## Como o score é calculado
 
 Todo o cálculo é determinístico e auditável em [app/scoring.py](app/scoring.py) — a IA

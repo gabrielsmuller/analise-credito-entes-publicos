@@ -23,6 +23,7 @@ from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
 from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
+from .edital_ia import analisar_edital, responder_pergunta_edital, situacao_prazo
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
 
@@ -249,17 +250,20 @@ async def _processar_job(job_id: str, params: dict) -> None:
         db.atualizar_job(job_id, "erro", erro=f"{type(exc).__name__}: {exc}")
 
 
-async def disparar_analise(params: dict) -> str:
+def _disparar(evento: dict) -> str:
     """Cria o job e inicia o processamento em segundo plano; devolve o job_id.
 
     - No Lambda: invoca a própria função de forma assíncrona (InvocationType
       Event). A requisição HTTP retorna na hora, sem segurar o navegador por
-      minutos (o que a Function URL/API Gateway não permitiria).
+      minutos (o que a Function URL/API Gateway não permitiria). O payload de
+      uma invocação assíncrona tem teto de 256 KB - por isso textos grandes
+      (editais) vão para o banco antes, e o evento leva só o id.
     - Local: dispara uma task em background, para a experiência de polling ser
       idêntica à de produção.
     """
     job_id = uuid.uuid4().hex[:12]
     db.criar_job(job_id)
+    evento = {**evento, "job_id": job_id}
     nome_funcao = os.getenv("AWS_LAMBDA_FUNCTION_NAME")
     if nome_funcao:
         import boto3
@@ -267,11 +271,37 @@ async def disparar_analise(params: dict) -> str:
         boto3.client("lambda").invoke(
             FunctionName=nome_funcao,
             InvocationType="Event",
-            Payload=json.dumps({"tipo": "analise", "job_id": job_id, "params": params}).encode(),
+            Payload=json.dumps(evento).encode(),
         )
     else:
-        asyncio.create_task(_processar_job(job_id, params))
+        asyncio.create_task(_executar_evento(evento))
     return job_id
+
+
+async def disparar_analise(params: dict) -> str:
+    return _disparar({"tipo": "analise", "params": params})
+
+
+async def _processar_edital(job_id: str, edital_id: int) -> None:
+    """Roda a leitura do edital pela IA e grava o resultado (para o polling ler)."""
+    try:
+        edital = db.buscar_edital(edital_id)
+        if edital is None:
+            raise ValueError(f"edital {edital_id} não encontrado")
+        dados = await asyncio.to_thread(analisar_edital, edital["texto"])
+        resumo_md = dados.pop("visao_geral_md", None)
+        db.concluir_edital(edital_id, dados, resumo_md)
+        db.atualizar_job(job_id, "pronto", analise_id=edital_id)
+    except Exception as exc:  # noqa: BLE001 - falha vira status de erro, não derruba nada
+        db.atualizar_job(job_id, "erro", erro=f"{type(exc).__name__}: {exc}")
+
+
+async def _executar_evento(evento: dict) -> None:
+    """Despacha o evento do worker para o processamento certo."""
+    if evento.get("tipo") == "edital":
+        await _processar_edital(evento["job_id"], int(evento["edital_id"]))
+    else:
+        await _processar_job(evento["job_id"], evento["params"])
 
 
 def _erro_form(request: Request, mensagem: str) -> HTMLResponse:
@@ -354,11 +384,13 @@ async def analisar(
 
 
 @app.get("/processando/{job_id}", response_class=HTMLResponse)
-async def processando(request: Request, job_id: str):
+async def processando(request: Request, job_id: str, tipo: str = "analise"):
     job = db.buscar_job(job_id)
     if job is None:
         return HTMLResponse("Processo não encontrado", status_code=404)
-    return templates.TemplateResponse(request, "processando.html", {"job_id": job_id})
+    return templates.TemplateResponse(
+        request, "processando.html", {"job_id": job_id, "tipo": "edital" if tipo == "edital" else "analise"}
+    )
 
 
 @app.get("/status/{job_id}")
@@ -438,6 +470,129 @@ async def api_chat(request: Request, analise_id: int, corpo: dict = Body(...)):
     return {"resposta": resposta, "autor": autor}
 
 
+# --- Editais (piloto) --------------------------------------------------------
+
+_MARCADORES_EDITAL = ("edital", "licita", "objeto", "proposta", "habilita")
+
+
+def _sem_acento(texto: str) -> str:
+    import unicodedata
+
+    return unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower().strip()
+
+
+def _credito_do_orgao(dados: dict) -> dict | None:
+    """Liga o edital à análise de crédito: acha a última análise do mesmo município.
+
+    Só casa município (nome + UF). Para outros órgãos o CNPJ do edital nem sempre
+    é o do ente pagador, então a tela apenas oferece a análise por CNPJ.
+    """
+    if (dados or {}).get("tipo_orgao") != "municipio" or not dados.get("municipio"):
+        return None
+    nome, uf = _sem_acento(dados["municipio"]), _sem_acento(dados.get("uf") or "")
+    for a in db.listar_analises():  # já vem da mais recente para a mais antiga
+        if _sem_acento(a.get("municipio")) == nome and (not uf or _sem_acento(a.get("uf")) == uf):
+            return a
+    return None
+
+
+def _conferir_itens(dados: dict) -> dict | None:
+    """Confere se a soma dos itens bate com o valor estimado total do edital."""
+    itens = (dados or {}).get("itens") or []
+    total = (dados or {}).get("valor_estimado_total")
+    valores = [i.get("valor_total_ref") for i in itens]
+    if not itens or total is None or any(v is None for v in valores):
+        return None
+    soma = round(sum(valores), 2)
+    return {"soma": soma, "total": total, "confere": abs(soma - total) <= max(1.0, total * 0.001)}
+
+
+@app.get("/editais", response_class=HTMLResponse)
+async def editais(request: Request):
+    lista = db.listar_editais()
+    for e in lista:
+        e["prazo"] = situacao_prazo((e.get("dados") or {}).get("data_abertura"))
+    return templates.TemplateResponse(request, "editais.html", {"editais": lista})
+
+
+@app.post("/editais/analisar")
+async def analisar_edital_upload(request: Request, arquivo: UploadFile | None = File(None)):
+    if arquivo is None or not (arquivo.filename or "").strip():
+        return _erro_form(request, "Anexe o PDF do edital.")
+    conteudo = await arquivo.read()
+    # API Gateway -> Lambda aceita até 6 MB por requisição, e o upload chega em
+    # base64 (+33%). Acima disso a requisição falharia antes de chegar aqui.
+    if len(conteudo) > 4 * 1024 * 1024:
+        return _erro_form(request, "O PDF é grande demais (máx. 4 MB). Envie só o edital e o termo de referência.")
+    try:
+        texto = await asyncio.to_thread(extrair_texto_pdf, conteudo)
+    except ValueError as exc:
+        return _erro_form(request, str(exc))
+    baixo = texto.lower()
+    if sum(m in baixo for m in _MARCADORES_EDITAL) < 3:
+        return _erro_form(request, "O PDF não parece um edital de licitação. Confira o arquivo.")
+
+    # o texto vai para o banco já aqui; o worker recebe só o id (ver _disparar)
+    edital_id = db.criar_edital(arquivo.filename, texto)
+    job_id = _disparar({"tipo": "edital", "edital_id": edital_id})
+    url = f"/processando/{job_id}?tipo=edital"
+    if request.headers.get("HX-Request"):
+        return HTMLResponse("", headers={"HX-Redirect": url})
+    return RedirectResponse(url, status_code=303)
+
+
+@app.get("/edital/{edital_id}", response_class=HTMLResponse)
+async def ver_edital(request: Request, edital_id: int):
+    edital = db.buscar_edital(edital_id)
+    if edital is None:
+        return HTMLResponse("Edital não encontrado", status_code=404)
+    dados = edital.get("dados") or {}
+    resumo_html = md.markdown(edital["resumo_md"], extensions=["tables"]) if edital.get("resumo_md") else None
+    return templates.TemplateResponse(
+        request,
+        "edital.html",
+        {
+            "edital": edital,
+            "e": dados,
+            "resumo_html": resumo_html,
+            "prazo": situacao_prazo(dados.get("data_abertura")),
+            "conferencia": _conferir_itens(dados),
+            "credito": _credito_do_orgao(dados),
+            "mensagens": db.listar_mensagens_edital(edital_id),
+        },
+    )
+
+
+@app.post("/api/edital-chat/{edital_id}")
+async def api_chat_edital(request: Request, edital_id: int, corpo: dict = Body(...)):
+    """Conversa com a IA sobre o edital; histórico no banco, como no dossiê."""
+    edital = db.buscar_edital(edital_id)
+    if edital is None:
+        return JSONResponse({"erro": "edital não encontrado"}, status_code=404)
+    pergunta = (corpo.get("pergunta") or "").strip()
+    if not pergunta:
+        return JSONResponse({"erro": "pergunta vazia"}, status_code=400)
+
+    autor = getattr(request.state, "usuario", None)
+    historico = [
+        {"role": m["papel"], "content": m["conteudo"]} for m in db.listar_mensagens_edital(edital_id)
+    ]
+    historico.append({"role": "user", "content": pergunta})
+    try:
+        resposta = await asyncio.to_thread(
+            responder_pergunta_edital, edital["texto"], edital.get("dados"), historico
+        )
+    except Exception as exc:  # noqa: BLE001 - erro da IA não deve derrubar a página
+        return JSONResponse({"erro": f"{type(exc).__name__}: {exc}"}, status_code=502)
+
+    db.salvar_mensagens_edital(
+        edital_id,
+        [{"papel": "user", "conteudo": pergunta}, {"papel": "assistant", "conteudo": resposta}],
+        autor=autor,
+    )
+    return {"resposta": resposta, "autor": autor}
+
+
 @app.get("/historico", response_class=HTMLResponse)
 async def historico(request: Request):
     return templates.TemplateResponse(request, "historico.html", {"analises": db.listar_analises()})
@@ -465,7 +620,7 @@ try:
     _mangum = Mangum(app, lifespan="off")
 
     def handler(event, context):
-        if isinstance(event, dict) and event.get("tipo") == "analise":
+        if isinstance(event, dict) and event.get("tipo") in ("analise", "edital"):
             # asyncio.run() FECHA o loop ao terminar; como o Lambda reaproveita o
             # container, o Mangum depois chamaria get_event_loop() num loop morto
             # e toda requisição HTTP daria 500. Por isso rodamos o worker num loop
@@ -473,7 +628,7 @@ try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                loop.run_until_complete(_processar_job(event["job_id"], event["params"]))
+                loop.run_until_complete(_executar_evento(event))
             finally:
                 loop.close()
                 asyncio.set_event_loop(asyncio.new_event_loop())

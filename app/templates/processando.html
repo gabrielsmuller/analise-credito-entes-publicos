@@ -3,6 +3,13 @@
 <div class="cartao" style="text-align:center; padding:2.5rem 1.5rem">
   <div id="area-carregando">
     <div class="rodela" aria-hidden="true"></div>
+    {% if tipo == "edital" %}
+    <h2 style="margin:1.2rem 0 0.4rem">Lendo o edital...</h2>
+    <p class="dica" style="max-width:520px; margin:0 auto">
+      A IA está lendo o edital inteiro e montando a visão geral. Leva cerca de 1 minuto. Pode
+      deixar esta aba aberta - ela abre a análise sozinha quando terminar.
+    </p>
+    {% else %}
     <h2 style="margin:1.2rem 0 0.4rem">Gerando o dossiê...</h2>
     <p class="dica" style="max-width:520px; margin:0 auto">
       Estamos coletando os dados públicos (caixa, restos a pagar, CAPAG, SICONFI, convênios,
@@ -10,12 +17,13 @@
       portais do governo estão lentos. Pode deixar esta aba aberta - ela abre o dossiê sozinha
       quando terminar.
     </p>
+    {% endif %}
     <p class="dica" id="tempo-decorrido" style="margin-top:1rem"></p>
   </div>
 
   <div id="area-erro" style="display:none">
     <div class="aviso-erro" id="msg-erro" style="text-align:left"></div>
-    <a href="/" class="dica">← Voltar e tentar novamente</a>
+    <a href="{{ '/editais' if tipo == 'edital' else '/' }}" class="dica">← Voltar e tentar novamente</a>
   </div>
 </div>
 
@@ -28,6 +36,7 @@
 
 <script>
   const jobId = {{ job_id | tojson }};
+  const tipo = {{ tipo | tojson }};
   const inicio = Date.now();
   const areaErro = document.getElementById("area-erro");
   const areaCarregando = document.getElementById("area-carregando");
@@ -52,14 +61,15 @@
       falhasSeguidas = 0;
       const d = await r.json();
       if (d.status === "pronto") {
-        let url = `/dossie/${d.analise_id}`;
+        let url = tipo === "edital" ? `/edital/${d.analise_id}` : `/dossie/${d.analise_id}`;
         if (d.erro_dossie) url += `?erro_dossie=${encodeURIComponent(d.erro_dossie.slice(0, 200))}`;
         window.location.href = url;
         return;
       }
       if (d.status === "erro") {
         mostrarErro("Não foi possível concluir a análise: " + (d.erro || "erro desconhecido")
-          + " - os portais do governo podem estar instáveis agora. Tente novamente em alguns minutos.");
+          + (tipo === "edital" ? " - tente novamente em alguns minutos."
+             : " - os portais do governo podem estar instáveis agora. Tente novamente em alguns minutos."));
         return;
       }
     } catch (e) {

@@ -1,0 +1,121 @@
+{# Chat com a IA + alternância de abas. Compartilhado por dossiê e edital.
+   Espera no contexto: chat_url, chat_vazio, chat_sugestoes, mensagens. #}
+  <div id="painel-chat" class="painel-conteudo oculto">
+    <div class="chat">
+      <div class="chat-mensagens" id="chat-mensagens">
+        {% if mensagens %}
+          {% for m in mensagens %}
+          <div class="msg {{ m.papel }}" data-bruto="{{ m.conteudo }}">
+            {%- if m.papel == "user" -%}
+              {{ m.conteudo }}
+              {%- if m.autor %}<span class="msg-autor">{{ m.autor }}</span>{% endif -%}
+            {%- endif -%}
+          </div>
+          {% endfor %}
+        {% else %}
+        <p class="chat-vazio">{{ chat_vazio }}</p>
+        <div class="sugestoes-chat">
+          {% for s in chat_sugestoes %}<span class="sugestao">{{ s }}</span>
+          {% endfor %}
+        </div>
+        {% endif %}
+      </div>
+      <div class="chat-entrada">
+        <textarea id="chat-texto" placeholder="Escreva sua pergunta e pressione Enter..." rows="1"></textarea>
+        <button id="chat-enviar" type="button">Enviar</button>
+      </div>
+    </div>
+  </div>
+<script>
+(() => {
+  const chatUrl = {{ chat_url | tojson }};
+
+  document.querySelectorAll(".aba").forEach(aba => {
+    aba.onclick = () => {
+      document.querySelectorAll(".aba").forEach(a => a.classList.remove("ativa"));
+      document.querySelectorAll(".painel-conteudo").forEach(p => p.classList.add("oculto"));
+      aba.classList.add("ativa");
+      document.getElementById(aba.dataset.alvo).classList.remove("oculto");
+    };
+  });
+
+  const caixa = document.getElementById("chat-mensagens");
+  const texto = document.getElementById("chat-texto");
+  const botao = document.getElementById("chat-enviar");
+
+  // Formatação mínima de markdown. O HTML é escapado ANTES de aplicar a
+  // marcação, então nada que o modelo escreva pode virar tag executável.
+  function formatar(texto) {
+    const escapado = texto
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return escapado
+      .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/^\s*[-*]\s+(.*)$/gm, "<li>$1</li>")
+      .replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>")
+      .replace(/\n{2,}/g, "</p><p>")
+      .replace(/\n/g, "<br>")
+      .replace(/^/, "<p>").replace(/$/, "</p>")
+      .replace(/<p>(\s*<ul>)/g, "$1").replace(/(<\/ul>\s*)<\/p>/g, "$1");
+  }
+
+  function adicionar(papel, conteudo, comFormatacao = true) {
+    const vazio = caixa.querySelector(".chat-vazio");
+    if (vazio) { vazio.remove(); caixa.querySelector(".sugestoes-chat")?.remove(); }
+    const div = document.createElement("div");
+    div.className = "msg " + papel;
+    if (comFormatacao) div.innerHTML = formatar(conteudo);
+    else div.textContent = conteudo;
+    caixa.appendChild(div);
+    caixa.scrollTop = caixa.scrollHeight;
+    return div;
+  }
+
+  function preencher(div, conteudo) {
+    div.innerHTML = formatar(conteudo);
+    caixa.scrollTop = caixa.scrollHeight;
+  }
+
+  async function enviar(pergunta) {
+    if (!pergunta.trim()) return;
+    adicionar("user", pergunta, false);  // a pergunta é do usuário: texto puro
+    texto.value = "";
+    botao.disabled = true;
+    const pensando = adicionar("assistant", "Pensando...", false);
+    try {
+      // o histórico é mantido no servidor; aqui vai só a pergunta nova
+      const resp = await fetch(chatUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pergunta }),
+      });
+      const dados = await resp.json();
+      if (!resp.ok) throw new Error(dados.erro || `HTTP ${resp.status}`);
+      preencher(pensando, dados.resposta);
+    } catch (e) {
+      pensando.className = "msg erro";
+      pensando.textContent = "Não consegui responder: " + e.message;
+    } finally {
+      botao.disabled = false;
+      texto.focus();
+    }
+  }
+
+  // formata as respostas já salvas que vieram renderizadas do servidor
+  caixa.querySelectorAll(".msg.assistant[data-bruto]").forEach(div => {
+    preencher(div, div.dataset.bruto);
+  });
+
+  botao.onclick = () => enviar(texto.value);
+  texto.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); enviar(texto.value); }
+  });
+  document.querySelectorAll(".sugestao").forEach(s => {
+    s.onclick = () => {
+      document.querySelector('.aba[data-alvo="painel-chat"]').click();
+      enviar(s.textContent);
+    };
+  });
+})();
+</script>

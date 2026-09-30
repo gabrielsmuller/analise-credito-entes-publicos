@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block titulo %}Editais - Análise de Crédito{% endblock %}
+{% block conteudo %}
+<div class="cartao">
+  <h2 style="margin-top:0">Analisar edital <span class="pill medio" style="font-size:0.7rem; vertical-align:middle">piloto</span></h2>
+
+  <form id="form-edital" hx-post="/editais/analisar" hx-encoding="multipart/form-data"
+        hx-indicator="#carregando" hx-request='{"timeout": 120000}'>
+    <label for="arquivo">PDF do edital *</label>
+    <input type="file" id="arquivo" name="arquivo" accept="application/pdf,.pdf">
+    <button type="submit" class="principal">Analisar edital</button>
+    <div id="carregando" class="indicador-carregando">⏳ Enviando o edital...</div>
+    <div id="erro-edital" class="aviso-erro" style="display:none; margin-top:1rem"></div>
+  </form>
+</div>
+
+<div class="cartao">
+  <h3 class="titulo-secao">Editais analisados</h3>
+  {% if editais %}
+  <table>
+    <thead><tr><th>#</th><th>Órgão / objeto</th><th>Sessão</th><th>Valor estimado</th><th>Atratividade</th><th></th></tr></thead>
+    <tbody>
+      {% for ed in editais %}
+      {% set e = ed.dados or {} %}
+      {% set nota = e.nota_atratividade or {} %}
+      <tr>
+        <td>{{ ed.id }}</td>
+        <td>
+          <strong>{{ e.orgao or ed.arquivo or "-" }}</strong>{% if e.uf %}/{{ e.uf }}{% endif %}<br>
+          <span class="dica">{{ e.numero or "" }}{% if e.objeto_resumo %} - {{ e.objeto_resumo }}{% endif %}</span>
+        </td>
+        <td>
+          {{ e.data_abertura or "-" }}
+          {% if ed.prazo %}<br><span class="pill {{ ed.prazo.tom }}">{{ ed.prazo.texto }}</span>{% endif %}
+        </td>
+        <td>{{ e.valor_estimado_total|moeda_curta if e.valor_estimado_total is not none else ("sigiloso" if e.valor_sigiloso else "-") }}</td>
+        <td>
+          {% if nota.nota is not none and nota.nota is defined %}
+            <strong>{{ nota.nota|numero(1) }}</strong><span class="dica">/10</span>
+            <span class="pill {{ 'bom' if nota.faixa == 'alta' else ('medio' if nota.faixa == 'média' else 'ruim') }}">{{ nota.faixa }}</span>
+          {% elif not ed.dados %}<span class="dica">sem análise</span>{% else %}-{% endif %}
+        </td>
+        <td>{% if ed.dados %}<a href="/edital/{{ ed.id }}">abrir</a>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="dica">Nenhum edital analisado ainda.</p>
+  {% endif %}
+</div>
+
+<script>
+  const formEd = document.getElementById("form-edital");
+  const erroEd = document.getElementById("erro-edital");
+  function erroEdital(msg) { erroEd.textContent = msg; erroEd.style.display = "block"; }
+  formEd.addEventListener("htmx:beforeRequest", (evt) => {
+    if (evt.detail.elt !== formEd) return;
+    const arq = document.getElementById("arquivo");
+    if (!arq.files || !arq.files.length) { evt.preventDefault(); erroEdital("Anexe o PDF do edital."); return; }
+    erroEd.style.display = "none";
+  });
+  formEd.addEventListener("htmx:responseError", (e) =>
+    erroEdital(e.detail.xhr.getResponseHeader("X-Erro") || ("Não foi possível enviar o edital (erro "
+      + (e.detail.xhr.status || "?") + ").")));
+  formEd.addEventListener("htmx:sendError", () => erroEdital("Falha de conexão com o servidor."));
+  formEd.addEventListener("htmx:timeout", () => erroEdital("O envio demorou demais. Tente novamente."));
+</script>
+{% endblock %}

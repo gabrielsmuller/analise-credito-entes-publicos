@@ -1,0 +1,209 @@
+{% extends "base.html" %}
+{% block titulo %}Edital - {{ e.orgao or edital.arquivo }}{% endblock %}
+
+{% set nota = e.nota_atratividade or {} %}
+{% set tom_nota = 'bom' if nota.faixa == 'alta' else ('medio' if nota.faixa == 'média' else 'ruim') %}
+
+{% macro sim_nao(valor) %}{% if valor is sameas true %}sim{% elif valor is sameas false %}não{% else %}<span class="dica">não informado</span>{% endif %}{% endmacro %}
+
+{% macro lista(titulo, itens, aberto=false) %}
+  {% if itens %}
+  <details class="bloco-lista" {{ 'open' if aberto else '' }}>
+    <summary><strong>{{ titulo }}</strong> <span class="dica">({{ itens|length }})</span></summary>
+    <ul>{% for i in itens %}<li>{{ i }}</li>{% endfor %}</ul>
+  </details>
+  {% endif %}
+{% endmacro %}
+
+{% block corpo %}
+<div class="painel">
+<div class="coluna-analise">
+
+{% if not edital.dados %}
+<div class="aviso-erro">A leitura deste edital pela IA não foi concluída. Envie o PDF novamente em
+  <a href="/editais">Editais</a>.</div>
+{% endif %}
+
+<!-- ===== Cabeçalho ===== -->
+<div class="cartao">
+  <div class="cabecalho-dossie">
+    <div>
+      <span class="pill medio" style="font-size:0.7rem">edital · piloto</span>
+      <h2 style="margin:0.4rem 0 0.2rem">{{ e.orgao or edital.arquivo }}{% if e.uf and e.orgao and e.uf not in e.orgao %}/{{ e.uf }}{% endif %}</h2>
+      <div class="dica">{{ e.numero or "" }}{% if e.criterio_julgamento %} · {{ e.criterio_julgamento }}{% endif %}{% if e.modo_disputa %} · disputa {{ e.modo_disputa }}{% endif %}</div>
+      {% if e.objeto_resumo %}<p style="margin:0.6rem 0 0">{{ e.objeto_resumo }}</p>{% endif %}
+    </div>
+    {% if nota.nota is not none and nota.nota is defined %}
+    <div style="text-align:center; min-width:130px">
+      <div class="card-rotulo">Atratividade</div>
+      <div class="score-numero">{{ nota.nota|numero(1) }}<span class="score-max">/10</span></div>
+      <span class="pill {{ tom_nota }}">{{ nota.faixa }}</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="grade-cards" style="margin-top:1.2rem">
+    <div class="card-indicador destacado">
+      <span class="card-rotulo">Sessão pública</span>
+      <span class="card-valor">{{ e.data_abertura or "-" }}</span>
+      <span class="card-nota">
+        {% if e.hora_abertura %}às {{ e.hora_abertura }} · {% endif %}
+        {% if prazo %}<span class="pill {{ prazo.tom }}">{{ prazo.texto }}</span>{% endif %}
+      </span>
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Valor estimado</span>
+      <span class="card-valor">{{ e.valor_estimado_total|moeda_curta if e.valor_estimado_total is not none else ("sigiloso" if e.valor_sigiloso else "-") }}</span>
+      <span class="card-nota">{{ (e.itens or [])|length }} item(ns)</span>
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Pagamento</span>
+      <span class="card-valor">{{ (e.prazo_pagamento_dias ~ " dias") if e.prazo_pagamento_dias is not none else "-" }}</span>
+      <span class="card-nota">após recebimento</span>
+    </div>
+    <div class="card-indicador">
+      <span class="card-rotulo">Entrega</span>
+      <span class="card-valor">{{ (e.prazo_entrega_dias ~ " dias") if e.prazo_entrega_dias is not none else "-" }}</span>
+      <span class="card-nota">{{ e.local_entrega or "" }}</span>
+    </div>
+  </div>
+  {% if e.plataforma or e.prazo_propostas %}
+  <p class="dica" style="margin:0.8rem 0 0">
+    {% if e.prazo_propostas %}Propostas: {{ e.prazo_propostas }}.{% endif %}
+    {% if e.plataforma %} Plataforma: {{ e.plataforma }}.{% endif %}
+  </p>
+  {% endif %}
+</div>
+
+<!-- ===== Crédito do órgão (ponte com a análise de crédito) ===== -->
+{% if e.orgao %}
+<div class="cartao">
+  <h3 class="titulo-secao">Risco de crédito do órgão</h3>
+  {% if credito %}
+    <p style="margin:0">
+      Última análise de <strong>{{ credito.municipio }}/{{ credito.uf }}</strong> ({{ credito.criado_em[:10] }}):
+      <span class="semaforo {{ credito.semaforo }}">{{ credito.semaforo }}</span>
+      {% if credito.score is not none %}<strong style="margin-left:0.4rem">{{ credito.score }}</strong><span class="dica">/100</span>{% endif %}
+      <a href="/dossie/{{ credito.id }}" style="margin-left:0.8rem">abrir dossiê →</a>
+    </p>
+  {% elif e.tipo_orgao == "municipio" and e.municipio %}
+    <p class="dica" style="margin:0 0 0.6rem">Este município ainda não tem análise de crédito.</p>
+    <a class="principal" style="display:inline-block; text-decoration:none; margin:0"
+       href="/?municipio={{ e.municipio|urlencode }}">Analisar crédito de {{ e.municipio }}{% if e.uf %}/{{ e.uf }}{% endif %}</a>
+  {% else %}
+    <p class="dica" style="margin:0 0 0.6rem">Para órgãos que não são municípios, a análise de crédito é
+      feita pelo relatório Serasa do CNPJ{% if e.cnpj_orgao %} ({{ e.cnpj_orgao }}){% endif %}.</p>
+    <a class="principal" style="display:inline-block; text-decoration:none; margin:0" href="/?modo=cnpj">Analisar por CNPJ</a>
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ===== Avaliação de atratividade ===== -->
+{% if nota.criterios %}
+<div class="cartao">
+  <h3 class="titulo-secao">Avaliação de atratividade</h3>
+  <table>
+    <thead><tr><th>Critério</th><th style="width:60px">Peso</th><th style="width:150px">Nota</th><th>Justificativa</th></tr></thead>
+    <tbody>
+      {% for c in nota.criterios %}
+      {% set cor = "#1e7e34" if c.nota is not none and c.nota >= 7 else ("#b8860b" if c.nota is not none and c.nota >= 5 else "#b02a37") %}
+      <tr>
+        <td>{{ c.rotulo }}</td>
+        <td class="dica">{{ c.peso }}</td>
+        <td>
+          {% if c.nota is not none %}
+          <strong>{{ c.nota|numero(0) }}</strong><span class="dica">/10</span>
+          <div class="bloco-trilha"><div class="bloco-preenchimento" style="width:{{ c.nota * 10 }}%; background:{{ cor }}"></div></div>
+          {% else %}-{% endif %}
+        </td>
+        <td class="dica">{{ c.justificativa or "" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="dica" style="margin-bottom:0">Notas por critério atribuídas pela IA a partir do edital; a nota
+    final é a média ponderada pelos pesos acima. É uma leitura orientativa - a decisão de participar é do
+    setor de licitações.</p>
+</div>
+{% endif %}
+
+<!-- ===== Itens ===== -->
+{% if e.itens %}
+<div class="cartao">
+  <h3 class="titulo-secao">Itens</h3>
+  <table>
+    <thead><tr><th>Item</th><th>Descrição</th><th>Qtd.</th><th>BTU/h</th><th>Unit. ref.</th><th>Total ref.</th></tr></thead>
+    <tbody>
+      {% for i in e.itens %}
+      <tr>
+        <td>{{ i.numero or loop.index }}</td>
+        <td>{{ i.descricao or "-" }}</td>
+        <td>{{ i.quantidade|numero if i.quantidade is not none else "-" }}</td>
+        <td>{{ i.capacidade_btu|numero if i.capacidade_btu else "-" }}</td>
+        <td>{{ i.valor_unitario_ref|moeda if i.valor_unitario_ref is not none else "-" }}</td>
+        <td>{{ i.valor_total_ref|moeda if i.valor_total_ref is not none else "-" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if conferencia %}
+    {% if conferencia.confere %}
+    <p class="ok-verde" style="margin-top:0.6rem">✓ A soma dos itens ({{ conferencia.soma|moeda }}) confere com o valor estimado do edital.</p>
+    {% else %}
+    <p class="destaque-ruim" style="margin-top:0.6rem">⚠ A soma dos itens ({{ conferencia.soma|moeda }}) difere do valor
+      estimado ({{ conferencia.total|moeda }}) - confira o termo de referência; a leitura pode ter falhado em algum item.</p>
+    {% endif %}
+  {% endif %}
+</div>
+{% endif %}
+
+<!-- ===== Condições e exigências ===== -->
+<div class="cartao">
+  <h3 class="titulo-secao">Condições e exigências</h3>
+  <table style="margin-bottom:1rem">
+    <tbody>
+      <tr><td>Garantia exigida</td><td>{{ (e.garantia_meses ~ " meses") if e.garantia_meses is not none else "-" }}</td></tr>
+      <tr><td>Instalação inclusa</td><td>{{ sim_nao(e.instalacao_inclusa) }}</td></tr>
+      <tr><td>Exclusivo ME/EPP</td><td>{{ sim_nao(e.exclusivo_me_epp) }}</td></tr>
+      <tr><td>Fonte dos recursos</td><td>{{ e.fonte_recursos or "-" }}</td></tr>
+    </tbody>
+  </table>
+  {{ lista("Pontos de atenção", e.pontos_atencao, aberto=true) }}
+  {{ lista("Exigências técnicas do produto", e.exigencias_tecnicas) }}
+  {{ lista("Documentos de habilitação", e.exigencias_habilitacao) }}
+  {{ lista("Penalidades", e.penalidades) }}
+  <p class="dica" style="margin-bottom:0">Arquivo: {{ edital.arquivo }} · analisado em {{ edital.criado_em.replace("T", " às ") }}</p>
+</div>
+
+<div class="nao-imprimir" style="margin-bottom:2rem">
+  <button class="principal" onclick="window.print()">🖨️ Salvar em PDF / Imprimir</button>
+  <a href="/editais" style="margin-left:1rem">Editais</a>
+</div>
+
+</div><!-- /coluna-analise -->
+
+<!-- ===== Coluna direita: visão geral + chat ===== -->
+<aside class="coluna-dossie nao-imprimir">
+  <div class="abas">
+    <button class="aba ativa" data-alvo="painel-dossie">Visão geral</button>
+    <button class="aba" data-alvo="painel-chat">Perguntar à IA</button>
+  </div>
+  <div id="painel-dossie" class="painel-conteudo dossie">
+    {% if resumo_html %}{{ resumo_html | safe }}{% else %}<p><em>Visão geral não gerada.</em></p>{% endif %}
+  </div>
+  {% set chat_url = "/api/edital-chat/" ~ edital.id %}
+  {% set chat_vazio = "Pergunte qualquer coisa sobre este edital. A IA responde com base no texto integral e cita a cláusula quando possível. As perguntas ficam salvas para a equipe." %}
+  {% set chat_sugestoes = ["Quais documentos preciso separar para a habilitação?", "Quais cláusulas são mais arriscadas para nós?", "A instalação está inclusa?", "O que acontece se eu atrasar a entrega?"] %}
+  {% include "_chat.html" %}
+</aside>
+</div><!-- /painel -->
+
+<div class="dossie somente-impressao">{% if resumo_html %}{{ resumo_html | safe }}{% endif %}</div>
+
+<style>
+  .bloco-lista { border: 1px solid var(--borda); border-radius: 8px; padding: 0.6rem 0.9rem; margin: 0 0 0.6rem; }
+  .bloco-lista summary { cursor: pointer; }
+  .bloco-lista ul { margin: 0.6rem 0 0.2rem; padding-left: 1.2rem; }
+  .bloco-lista li { margin: 0.25rem 0; font-size: 0.92rem; }
+</style>
+{% endblock %}

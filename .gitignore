@@ -14,6 +14,9 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# --- PDFs de teste na raiz (editais, relatórios Serasa) ---
+/*.pdf
+
 # --- Dados locais e caches (banco SQLite + caches CAPAG/entes; refazem-se) ---
 data/
 

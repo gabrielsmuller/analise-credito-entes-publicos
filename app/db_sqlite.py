@@ -31,6 +31,24 @@ CREATE TABLE IF NOT EXISTS mensagens_chat (
 
 CREATE INDEX IF NOT EXISTS idx_mensagens_analise ON mensagens_chat(analise_id, id);
 
+CREATE TABLE IF NOT EXISTS editais (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    criado_em TEXT NOT NULL,
+    arquivo TEXT,
+    texto TEXT NOT NULL,
+    dados_json TEXT,
+    resumo_md TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mensagens_edital (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edital_id INTEGER NOT NULL REFERENCES editais(id) ON DELETE CASCADE,
+    criado_em TEXT NOT NULL,
+    papel TEXT NOT NULL,
+    conteudo TEXT NOT NULL,
+    autor TEXT
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     job_id TEXT PRIMARY KEY,
     status TEXT NOT NULL,
@@ -166,5 +184,83 @@ def atualizar_job(job_id, status, analise_id=None, erro=None, erro_dossie=None) 
             "UPDATE jobs SET status=?, analise_id=COALESCE(?, analise_id), "
             "erro=COALESCE(?, erro), erro_dossie=COALESCE(?, erro_dossie) WHERE job_id=?",
             (status, analise_id, erro, erro_dossie, job_id),
+        )
+    con.close()
+
+
+# --- Editais (piloto de análise de editais) --------------------------------
+
+def criar_edital(arquivo: str, texto: str) -> int:
+    """Registra o edital com o texto extraído; a análise da IA entra depois."""
+    con = conectar()
+    with con:
+        cur = con.execute(
+            "INSERT INTO editais (criado_em, arquivo, texto) VALUES (?,?,?)",
+            (datetime.now().isoformat(timespec="seconds"), arquivo, texto),
+        )
+    edital_id = cur.lastrowid
+    con.close()
+    return edital_id
+
+
+def concluir_edital(edital_id: int, dados: dict, resumo_md: str | None) -> None:
+    con = conectar()
+    with con:
+        con.execute(
+            "UPDATE editais SET dados_json=?, resumo_md=? WHERE id=?",
+            (json.dumps(dados, ensure_ascii=False), resumo_md, edital_id),
+        )
+    con.close()
+
+
+def buscar_edital(edital_id: int):
+    con = conectar()
+    row = con.execute("SELECT * FROM editais WHERE id = ?", (edital_id,)).fetchone()
+    con.close()
+    if row is None:
+        return None
+    edital = dict(row)
+    bruto = edital.pop("dados_json")
+    edital["dados"] = json.loads(bruto) if bruto else None
+    return edital
+
+
+def listar_editais() -> list[dict]:
+    """Metadados para a lista; o texto integral fica de fora (é grande)."""
+    con = conectar()
+    rows = con.execute(
+        "SELECT id, criado_em, arquivo, dados_json FROM editais ORDER BY id DESC"
+    ).fetchall()
+    con.close()
+    saida = []
+    for r in rows:
+        item = dict(r)
+        bruto = item.pop("dados_json")
+        item["dados"] = json.loads(bruto) if bruto else None
+        saida.append(item)
+    return saida
+
+
+def listar_mensagens_edital(edital_id: int) -> list[dict]:
+    con = conectar()
+    rows = con.execute(
+        "SELECT papel, conteudo, criado_em, autor FROM mensagens_edital "
+        "WHERE edital_id = ? ORDER BY id",
+        (edital_id,),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def salvar_mensagens_edital(edital_id: int, mensagens: list[dict], autor: str | None = None) -> None:
+    con = conectar()
+    with con:
+        con.executemany(
+            "INSERT INTO mensagens_edital (edital_id, criado_em, papel, conteudo, autor) "
+            "VALUES (?,?,?,?,?)",
+            [
+                (edital_id, datetime.now().isoformat(timespec="seconds"), m["papel"], m["conteudo"], autor)
+                for m in mensagens
+            ],
         )
     con.close()

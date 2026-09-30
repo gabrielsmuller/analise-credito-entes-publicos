@@ -136,6 +136,18 @@
     b.addEventListener("click", () => definirModo(b.dataset.modo)));
   definirModo("municipio");
 
+  // Atalhos vindos da página do edital: ?modo=cnpj ou ?municipio=Nome (já busca)
+  const atalho = new URLSearchParams(location.search);
+  if (atalho.get("modo") === "cnpj") definirModo("cnpj");
+  if (atalho.get("municipio")) {
+    window.addEventListener("load", () => {
+      const busca = document.getElementById("busca-municipio");
+      busca.value = atalho.get("municipio");
+      htmx.trigger(busca, "input");
+      busca.focus();
+    });
+  }
+
   // Autocomplete de municípios: interceptamos a resposta JSON de /api/municipios
   document.body.addEventListener("htmx:beforeSwap", function (evt) {
     if (!evt.detail.xhr.responseURL.includes("/api/municipios")) return;
