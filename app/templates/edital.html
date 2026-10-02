@@ -75,6 +75,23 @@
   {% endif %}
 </div>
 
+{% if e.texto_cortado %}
+<div class="aviso-erro">
+  <strong>⚠ Edital longo: parte do texto não foi analisada.</strong>
+  O documento tem {{ e.texto_cortado.total|numero }} caracteres.
+  {% if e.texto_cortado.matriz_cortada %}
+    As exigências foram levantadas só até o caractere {{ e.texto_cortado.matriz|numero }}
+    (cerca de {{ (e.texto_cortado.matriz / e.texto_cortado.total * 100)|round|int }}% do edital) -
+    <strong>exigências das páginas finais podem estar faltando</strong>.
+  {% else %}
+    A lista de exigências cobre o edital inteiro; a visão geral, o checklist e a nota consideraram
+    só o início (até o caractere {{ e.texto_cortado.visao_geral|numero }}).
+  {% endif %}
+  Se o edital tem anexos que não interessam (minutas, modelos de declaração), envie só o edital e o
+  termo de referência.
+</div>
+{% endif %}
+
 <!-- ===== O que este edital pede de diferente ===== -->
 {% if matriz and matriz.classificado %}
 <div class="cartao destaque-edital">

@@ -23,8 +23,12 @@ from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
 from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
-from .edital_exigencias import CATEGORIAS, extrair_exigencias, normalizar_item, resumir_exigencias
-from .edital_ia import analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo
+from .edital_exigencias import (
+    CATEGORIAS, LIMITE_MATRIZ, extrair_exigencias, normalizar_item, resumir_exigencias,
+)
+from .edital_ia import (
+    MAX_CARACTERES, analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo,
+)
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
 
@@ -314,6 +318,15 @@ async def _processar_edital(job_id: str, edital_id: int) -> None:
             dados["exigencias_erro"] = f"{type(matriz).__name__}: {matriz}"
         else:
             dados["exigencias"] = matriz
+        # edital longo demais é cortado - e isso precisa aparecer na tela, nunca em silêncio
+        total = len(edital["texto"])
+        if total > MAX_CARACTERES:
+            dados["texto_cortado"] = {
+                "total": total,
+                "visao_geral": MAX_CARACTERES,
+                "matriz": min(total, LIMITE_MATRIZ),
+                "matriz_cortada": total > LIMITE_MATRIZ,
+            }
         resumo_md = dados.pop("visao_geral_md", None)
         db.concluir_edital(edital_id, dados, resumo_md)
         db.atualizar_job(job_id, "pronto", analise_id=edital_id)

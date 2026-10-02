@@ -15,7 +15,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
-from .edital_ia import _chamar_json, _texto_limitado
+from .edital_ia import _chamar_json
 
 CATEGORIAS = {
     "participacao": "Participação e credenciamento",
@@ -35,7 +35,11 @@ CATEGORIAS = {
 CONSEQUENCIAS_GRAVES = ("desclassifica", "inabilita", "rescis", "impediment", "inidone")
 
 TAMANHO_BLOCO = 24_000  # caracteres por chamada; blocos menores = leitura mais atenta
-MAX_PARALELO = 4
+MAX_PARALELO = 6
+# Lida em blocos, a matriz aceita bem mais texto que a leitura geral (uma chamada só,
+# limitada pelo contexto do modelo). 800 mil caracteres ~ 250 páginas ~ 34 blocos,
+# ~7 min no pior caso - dentro do teto de 15 min do Lambda. Acima disso, corta e AVISA.
+LIMITE_MATRIZ = 800_000
 
 SYSTEM_EXIGENCIAS = """Você recebe UM TRECHO de um edital de licitação (as páginas vêm marcadas \
 com "=== página N ==="). Liste TODAS as exigências, obrigações, condições, prazos, especificações \
@@ -146,12 +150,22 @@ _PALAVRAS_VAZIAS = {
 
 
 def _item_norm(valor) -> str | None:
-    """'01', '1', 'item 1' -> '1'. Texto que não é número de item (ex.: '32 aparelhos...') -> None."""
+    """Número do item, comparável entre a matriz e a tabela de itens.
+
+    '01', '1', 'Item 1' -> '1'; com lote: '1.3', 'Lote 1 - Item 3' -> '1.3' (sem colidir
+    com o item 1). Texto que não é só rótulo de item/lote ('32 aparelhos de ar') -> None.
+    """
     texto = _limpar(valor)
-    if not texto or len(texto) > 12:
+    if not texto:
         return None
-    m = re.search(r"\d+", texto)
-    return str(int(m.group())) if m else None
+    t = _normalizar(texto)
+    sobra = re.sub(r"\b(lotes?|grupos?|itens|item|n|no|nr|num|numero)\b", " ", t)
+    if re.sub(r"[\d\s.,/]+", "", sobra):
+        return None
+    numeros = re.findall(r"\d+", t)
+    if not numeros or len(numeros) > 3:
+        return None
+    return ".".join(str(int(n)) for n in numeros)
 
 
 normalizar_item = _item_norm  # público: a tela casa as especificações com a tabela de itens
@@ -237,7 +251,7 @@ def _limpar(valor) -> str | None:
 
 def extrair_exigencias(texto: str) -> list[dict]:
     """Matriz exaustiva de exigências: leitura em blocos, dedupe e verificação."""
-    paginas = paginas_do_texto(_texto_limitado(texto))
+    paginas = paginas_do_texto(texto[:LIMITE_MATRIZ])
     blocos = _blocos(paginas)
     with ThreadPoolExecutor(max_workers=MAX_PARALELO) as pool:
         respostas = list(pool.map(
