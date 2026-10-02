@@ -437,15 +437,26 @@ def _tem_numero(texto: str) -> bool:
 def _agrupar_destaques(destaques: list[dict]) -> list[dict]:
     """Uma linha por documento (o balanço tem 4-5 exigências; viram uma linha com detalhes).
 
-    Exigências sem documento ficam uma por linha.
+    Sem documento, a mesma regra repetida por item ("máximo unitário R$ 2.366,82",
+    "máximo unitário R$ 3.415,55"...) vira uma linha só, com os valores dentro.
     """
     linhas: list[dict] = []
     for e in destaques:
-        chave = _chave_comparacao(e["documento"]) if e.get("documento") else None
-        linha = next((l for l in linhas if chave and l["_chave"] and
-                      SequenceMatcher(None, l["_chave"], chave).ratio() >= 0.8), None)
+        documento = e.get("documento")
+        if documento and _DOC_GENERICO.match(_normalizar(documento)):
+            documento = None  # "Documentos de habilitação" não diz qual documento
+        if documento:
+            chave, titulo = "doc " + _chave_comparacao(documento), documento
+        else:
+            # molde da regra: o rótulo curto sem números e valores
+            molde = re.sub(r"\s+", " ", re.sub(r"(r\$\s*)?\d[\d.,/%]*", " ", (e.get("curto") or "").lower())).strip()
+            chave = ("regra " + _chave_comparacao(molde)) if len(molde) >= 6 else None
+            titulo = e.get("curto") or e["exigencia"]
+        linha = next((l for l in linhas if chave and l["_chave"] and (
+            l["_chave"] == chave or (chave.startswith("doc ") and l["_chave"].startswith("doc ")
+                                     and SequenceMatcher(None, l["_chave"], chave).ratio() >= 0.8))), None)
         if linha is None:
-            linha = {"_chave": chave, "titulo": e["documento"] or e.get("curto") or e["exigencia"],
+            linha = {"_chave": chave, "titulo": titulo, "molde": molde if not documento else None,
                      "categoria": e["categoria"], "exigencias": [], "clausulas": [], "paginas": []}
             linhas.append(linha)
         linha["exigencias"].append(e)
@@ -457,6 +468,11 @@ def _agrupar_destaques(destaques: list[dict]) -> list[dict]:
     for l in linhas:
         l.pop("_chave")
         l["paginas"].sort()
+        molde = l.pop("molde")
+        if molde and len(l["exigencias"]) > 1:  # regra repetida: título sem o valor de cada um
+            itens = sum(1 for x in l["exigencias"] if x.get("item"))
+            sufixo = f" ({itens} itens)" if itens > 1 else f" ({len(l['exigencias'])}x)"
+            l["titulo"] = molde[:1].upper() + molde[1:].rstrip(" -:") + sufixo
     return linhas
 
 
