@@ -75,6 +75,42 @@
   {% endif %}
 </div>
 
+<!-- ===== O que este edital pede de diferente ===== -->
+{% if matriz and matriz.classificado %}
+<div class="cartao destaque-edital">
+  <h3 class="titulo-secao">O que este edital pede de diferente</h3>
+  <p class="dica" style="margin-top:0">Exigências próprias deste edital que <strong>eliminam</strong> a
+    proposta ou o licitante se não forem cumpridas. O que é rotina de qualquer pregão
+    ({{ matriz.padrao }} exigências) fica fora daqui, na lista completa.</p>
+  {% if matriz.destaques %}
+  <table>
+    <tbody>
+      {% for d in matriz.destaques %}
+      <tr>
+        <td style="width:32%"><strong>{{ d.titulo }}</strong>
+          <div class="dica">{{ categorias[d.categoria] }}</div></td>
+        <td>
+          {% if d.exigencias|length == 1 %}{{ d.exigencias[0].exigencia }}
+          {% else %}<ul class="lista-destaque">{% for x in d.exigencias %}<li>{{ x.exigencia }}</li>{% endfor %}</ul>{% endif %}
+        </td>
+        <td class="dica" style="width:95px">{{ d.clausulas[:3]|join(", ") }}{% if d.paginas %}<br>p. {{ d.paginas[:3]|join(", ") }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="ok-verde">✓ Nenhuma exigência eliminatória fora do padrão foi encontrada.</p>
+  {% endif %}
+  <p class="dica" style="margin-bottom:0">Especificações do produto ficam na tabela de itens; documentos
+    e condições de execução, nos quadros abaixo.</p>
+</div>
+{% elif matriz %}
+<div class="cartao">
+  <p class="dica" style="margin:0">Este edital foi lido antes da separação entre exigências de rotina e
+    exigências próprias. Use "Reanalisar edital" no fim da página para ver os destaques.</p>
+</div>
+{% endif %}
+
 <!-- ===== Checklist fixo ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Checklist do edital</h3>
@@ -169,10 +205,22 @@
 </div>
 {% endif %}
 
-<!-- ===== Itens ===== -->
+<!-- ===== Itens + especificações por item ===== -->
 {% if e.itens %}
 <div class="cartao">
-  <h3 class="titulo-secao">Itens</h3>
+  <h3 class="titulo-secao">Itens e especificações do produto</h3>
+  {% if specs_gerais %}
+  <div class="specs-gerais">
+    <strong>Valem para todos os itens:</strong>
+    {% for x in specs_gerais[:12] %}<span class="chip" title="{{ x.exigencia }}{% if x.clausulas %} ({{ x.clausulas|join(', ') }}){% endif %}">{{ x.curto or x.exigencia }}</span>{% endfor %}
+    {% if specs_gerais|length > 12 %}
+    <details class="mais-specs">
+      <summary>ver todas ({{ specs_gerais|length }})</summary>
+      {% for x in specs_gerais[12:] %}<span class="chip" title="{{ x.exigencia }}{% if x.clausulas %} ({{ x.clausulas|join(', ') }}){% endif %}">{{ x.curto or x.exigencia }}</span>{% endfor %}
+    </details>
+    {% endif %}
+  </div>
+  {% endif %}
   <table>
     <thead><tr><th>Item</th><th>Descrição</th><th>Qtd.</th><th>BTU/h</th><th>Unit. ref.</th><th>Total ref.</th></tr></thead>
     <tbody>
@@ -185,6 +233,15 @@
         <td>{{ i.valor_unitario_ref|moeda if i.valor_unitario_ref is not none else "-" }}</td>
         <td>{{ i.valor_total_ref|moeda if i.valor_total_ref is not none else "-" }}</td>
       </tr>
+      {% set specs = specs_por_item.get(i.chave_item) %}
+      {% if specs %}
+      <tr class="linha-specs">
+        <td></td>
+        <td colspan="5">
+          {% for x in specs %}<span class="chip" title="{{ x.exigencia }}{% if x.clausulas %} ({{ x.clausulas|join(', ') }}){% endif %}">{{ x.curto or x.exigencia }}</span>{% endfor %}
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>
@@ -196,60 +253,66 @@
       estimado ({{ conferencia.total|moeda }}) - confira o termo de referência; a leitura pode ter falhado em algum item.</p>
     {% endif %}
   {% endif %}
+  {% if specs_por_item or specs_gerais %}
+  <p class="dica" style="margin-bottom:0">Passe o mouse numa especificação para ver o texto completo e a cláusula.</p>
+  {% endif %}
 </div>
 {% endif %}
 
-<!-- ===== Matriz de exigências ===== -->
-{% if matriz or e.exigencias_erro %}
-<div class="cartao" id="matriz">
-  <h3 class="titulo-secao">Exigências do edital</h3>
-  {% if e.exigencias_erro %}
-    <div class="aviso-erro">A extração completa das exigências falhou: <code>{{ e.exigencias_erro }}</code>.
-      Use "Reanalisar edital" no fim da página.</div>
-  {% endif %}
-  {% if matriz %}
-  <p style="margin:0 0 0.8rem">
-    <strong>{{ matriz.total }}</strong> exigências encontradas ·
-    <span class="pill ruim" title="Descumprir desclassifica a proposta, inabilita o licitante ou encerra o contrato">{{ matriz.graves }} eliminatória{{ 's' if matriz.graves != 1 else '' }}</span>
-    {% if matriz.nao_localizadas %}· <span class="pill medio">{{ matriz.nao_localizadas }} não localizada{{ 's' if matriz.nao_localizadas != 1 else '' }} no texto</span>{% endif %}
-  </p>
-  <div class="filtro-matriz">
-    <input type="text" id="busca-exigencia" placeholder="Buscar exigência (ex.: balanço, R32, atestado, multa)...">
-    <label class="so-graves"><input type="checkbox" id="so-graves"> só as eliminatórias</label>
-  </div>
-  {% for g in matriz.grupos %}
-  <details class="grupo-exigencias" data-grupo>
-    <summary><strong>{{ g.rotulo }}</strong> <span class="dica contagem">({{ g.exigencias|length }})</span></summary>
-    <table>
-      <tbody>
-        {% for x in g.exigencias %}
-        <tr class="linha-exigencia" data-grave="{{ 1 if x.grave else 0 }}">
-          <td>
-            {% if x.item %}<span class="pill neutro">item {{ x.item }}</span> {% endif %}{{ x.exigencia }}
-            {% if x.consequencia %}<br><span class="pill {{ 'ruim' if x.grave else 'neutro' }}" style="margin-top:0.25rem">{{ x.consequencia }}</span>{% endif %}
-          </td>
-          <td class="dica" style="width:95px">{{ x.clausulas|join(", ") if x.clausulas else "-" }}</td>
-          <td class="dica" style="width:52px">{{ ("p. " ~ x.pagina) if x.pagina else "" }}</td>
-          <td style="width:28px; text-align:center" title="{{ x.trecho or '' }}">
-            {%- if x.verificacao == "verificado" -%}<span class="verif ok">✓</span>
-            {%- elif x.verificacao == "aproximado" -%}<span class="verif aprox">≈</span>
-            {%- else -%}<span class="verif falta">!</span>{%- endif -%}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+<!-- ===== Documentos para habilitação ===== -->
+{% if matriz and matriz.documentos %}
+<div class="cartao">
+  <h3 class="titulo-secao">Documentos a apresentar ({{ matriz.documentos|length }})</h3>
+  <p class="dica" style="margin-top:0">A falta de qualquer um desclassifica a proposta ou inabilita o
+    licitante. Os marcados com detalhes têm exigência própria deste edital; os demais são de rotina.</p>
+  <table>
+    <thead><tr><th>Documento</th><th style="width:130px">Quando</th><th>O que este edital exige dele</th><th style="width:95px">Cláusula</th></tr></thead>
+    <tbody>
+      {% for d in matriz.documentos %}
+      <tr>
+        <td>{% if d.especifico %}<strong>{{ d.nome }}</strong>{% else %}{{ d.nome }}{% endif %}</td>
+        <td class="dica">{{ d.fase }}</td>
+        <td>
+          {% if d.detalhes %}
+            {% for x in d.detalhes %}<div class="detalhe-doc">{{ x.exigencia }}</div>{% endfor %}
+          {% else %}<span class="dica">documento de rotina</span>{% endif %}
+        </td>
+        <td class="dica">{{ d.clausulas[:3]|join(", ") }}{% if d.paginas %}<br>p. {{ d.paginas[:3]|join(", ") }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if matriz.documentos_condicionais %}
+  <details class="bloco-lista" style="margin-top:0.8rem">
+    <summary><strong>Só em casos específicos</strong> <span class="dica">({{ matriz.documentos_condicionais|length }}) - cooperativa, MEI, empresa estrangeira, consórcio, recuperação judicial...</span></summary>
+    <ul>{% for d in matriz.documentos_condicionais %}<li>{{ d.nome }} <span class="dica">{{ d.clausulas[:2]|join(", ") }}</span></li>{% endfor %}</ul>
   </details>
-  {% endfor %}
-  <p class="dica" style="margin-bottom:0">Lista extraída pela IA lendo o edital em partes, uma exigência
-    por linha. Cada linha traz o trecho literal (passe o mouse no símbolo): <span class="verif ok">✓</span>
-    trecho conferido no texto do edital · <span class="verif aprox">≈</span> conferido com pequenas diferenças ·
-    <span class="verif falta">!</span> trecho não encontrado - confira no edital antes de confiar.</p>
   {% endif %}
 </div>
 {% endif %}
 
-<!-- ===== Condições e exigências ===== -->
+<!-- ===== Execução do contrato ===== -->
+{% if matriz and matriz.execucao %}
+<div class="cartao">
+  <h3 class="titulo-secao">Execução do contrato</h3>
+  <p class="dica" style="margin-top:0">Prazos, recebimento, pagamento, garantia e multas próprios deste edital.</p>
+  {% for cat in ["entrega_execucao", "recebimento_pagamento", "garantia_assistencia", "sancoes"] %}
+  {% set linhas = matriz.execucao|selectattr("categoria", "equalto", cat)|list %}
+  {% if linhas %}
+  <details class="bloco-lista" {{ 'open' if cat in ("entrega_execucao", "sancoes") else '' }}>
+    <summary><strong>{{ categorias[cat] }}</strong> <span class="dica">({{ linhas|length }})</span></summary>
+    <ul>
+      {% for x in linhas %}
+      <li>{{ x.exigencia }} <span class="dica">{{ x.clausulas[:2]|join(", ") }}{% if x.pagina %} · p. {{ x.pagina }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- ===== Condições e pontos de atenção ===== -->
 <div class="cartao">
   <h3 class="titulo-secao">Condições e pontos de atenção</h3>
   <table style="margin-bottom:1rem">
@@ -263,11 +326,70 @@
     </tbody>
   </table>
   {{ lista("Pontos de atenção", e.pontos_atencao, aberto=true) }}
+  {# listas resumidas das análises anteriores à matriz de exigências #}
+  {% if not matriz %}
   {{ lista("Exigências técnicas do produto", e.exigencias_tecnicas) }}
   {{ lista("Documentos de habilitação", e.exigencias_habilitacao) }}
   {{ lista("Penalidades", e.penalidades) }}
-  <p class="dica" style="margin-bottom:0">Arquivo: {{ edital.arquivo }} · enviado em {{ edital.criado_em|data_br }}</p>
+  {% endif %}
 </div>
+
+<!-- ===== Lista completa (registro auditável) ===== -->
+{% if matriz or e.exigencias_erro %}
+<div class="cartao" id="matriz">
+  {% if e.exigencias_erro %}
+    <div class="aviso-erro">A extração completa das exigências falhou: <code>{{ e.exigencias_erro }}</code>.
+      Use "Reanalisar edital" no fim da página.</div>
+  {% endif %}
+  {% if matriz %}
+  <details id="lista-completa">
+    <summary class="titulo-secao" style="cursor:pointer; border:0; margin:0">
+      Lista completa de exigências ({{ matriz.total }})
+      <span class="dica" style="font-weight:400">- registro de tudo o que o edital exige, com trecho e página</span>
+    </summary>
+    <p style="margin:0.8rem 0">
+      {% if matriz.classificado %}{{ matriz.especificas }} próprias deste edital · {{ matriz.padrao }} de rotina · {% endif %}
+      <span class="pill ruim" title="Descumprir desclassifica a proposta, inabilita o licitante ou encerra o contrato">{{ matriz.graves }} eliminatória{{ 's' if matriz.graves != 1 else '' }}</span>
+      {% if matriz.nao_localizadas %}· <span class="pill medio">{{ matriz.nao_localizadas }} não localizada{{ 's' if matriz.nao_localizadas != 1 else '' }} no texto</span>{% endif %}
+    </p>
+    <div class="filtro-matriz">
+      <input type="text" id="busca-exigencia" placeholder="Buscar exigência (ex.: balanço, R32, atestado, multa)...">
+      <label class="so-graves"><input type="checkbox" id="so-graves"> só as eliminatórias</label>
+    </div>
+    {% for g in matriz.grupos %}
+    <details class="grupo-exigencias" data-grupo>
+      <summary><strong>{{ g.rotulo }}</strong> <span class="dica contagem">({{ g.exigencias|length }})</span></summary>
+      <table>
+        <tbody>
+          {% for x in g.exigencias %}
+          <tr class="linha-exigencia" data-grave="{{ 1 if x.grave else 0 }}">
+            <td>
+              {% if x.item %}<span class="pill neutro">item {{ x.item }}</span> {% endif %}{{ x.exigencia }}
+              {% if matriz.classificado and x.padrao %}<span class="pill neutro" title="Exigência de rotina, presente em praticamente qualquer pregão">rotina</span>{% endif %}
+              {% if x.consequencia %}<br><span class="pill {{ 'ruim' if x.grave else 'neutro' }}" style="margin-top:0.25rem">{{ x.consequencia }}</span>{% endif %}
+            </td>
+            <td class="dica" style="width:95px">{{ x.clausulas|join(", ") if x.clausulas else "-" }}</td>
+            <td class="dica" style="width:52px">{{ ("p. " ~ x.pagina) if x.pagina else "" }}</td>
+            <td style="width:28px; text-align:center" title="{{ x.trecho or '' }}">
+              {%- if x.verificacao == "verificado" -%}<span class="verif ok">✓</span>
+              {%- elif x.verificacao == "aproximado" -%}<span class="verif aprox">≈</span>
+              {%- else -%}<span class="verif falta">!</span>{%- endif -%}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endfor %}
+    <p class="dica" style="margin-bottom:0">Lista extraída pela IA lendo o edital em partes, uma exigência
+      por linha. Cada linha traz o trecho literal (passe o mouse no símbolo): <span class="verif ok">✓</span>
+      trecho conferido no texto do edital · <span class="verif aprox">≈</span> conferido com pequenas diferenças ·
+      <span class="verif falta">!</span> trecho não encontrado - confira no edital antes de confiar.</p>
+  </details>
+  {% endif %}
+  <p class="dica" style="margin:0.8rem 0 0">Arquivo: {{ edital.arquivo }} · enviado em {{ edital.criado_em|data_br }}</p>
+</div>
+{% endif %}
 
 <div class="nao-imprimir" style="margin-bottom:2rem">
   <button class="principal" onclick="window.print()">🖨️ Salvar em PDF / Imprimir</button>
@@ -303,6 +425,18 @@
   .bloco-lista summary { cursor: pointer; }
   .bloco-lista ul { margin: 0.6rem 0 0.2rem; padding-left: 1.2rem; }
   .bloco-lista li { margin: 0.25rem 0; font-size: 0.92rem; }
+  .chip { display: inline-block; background: #eef4fb; color: var(--azul); border-radius: 999px;
+          padding: 0.15rem 0.6rem; margin: 0.15rem 0.25rem 0.15rem 0; font-size: 0.8rem; cursor: help; }
+  .linha-specs td { border-top: 0; padding-top: 0; }
+  .specs-gerais { margin-bottom: 0.8rem; font-size: 0.9rem; }
+  .mais-specs { display: inline; }
+  .mais-specs summary { display: inline; cursor: pointer; color: var(--azul-claro); font-size: 0.82rem; }
+  .detalhe-doc { font-size: 0.88rem; margin: 0.1rem 0; }
+  .detalhe-doc + .detalhe-doc { border-top: 1px dashed var(--borda); padding-top: 0.2rem; }
+  .destaque-edital { border-left: 4px solid var(--vermelho); }
+  .lista-destaque { margin: 0; padding-left: 1.1rem; }
+  .lista-destaque li { margin: 0.15rem 0; }
+  #lista-completa > summary { list-style: revert; }
   .grupo-exigencias { border: 1px solid var(--borda); border-radius: 8px; padding: 0.55rem 0.9rem; margin: 0 0 0.5rem; }
   .grupo-exigencias summary { cursor: pointer; }
   .grupo-exigencias table { margin-top: 0.5rem; }
@@ -332,6 +466,7 @@
       g.style.display = visiveis ? "" : "none";
       g.querySelector(".contagem").textContent = `(${visiveis})`;
       g.open = !!(termo || graves) && visiveis > 0;
+      if (termo || graves) document.getElementById("lista-completa").open = true;
     });
   }
   busca.addEventListener("input", filtrar);

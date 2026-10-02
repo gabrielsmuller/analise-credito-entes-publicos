@@ -120,6 +120,12 @@ ele é enviado, então o tamanho do PDF não importa. A análise tem três parte
   especificação de produto por item, entrega, sanções...). O código funde as repetições (edital,
   termo de referência e minuta repetem cláusulas) e **confere o trecho citado de cada exigência
   contra o texto do edital**, calculando a página; o que não é localizado fica marcado.
+  A matriz (300+ linhas) não é lida inteira: a página a organiza em visões de uso —
+  **o que este edital pede de diferente** (exigências próprias, eliminatórias e concretas, com
+  documento ou número; critério aplicado no código), **especificações por item** junto da tabela
+  de itens, **documentos a apresentar** (uma linha por documento; os de casos específicos, como
+  cooperativa ou MEI, recolhidos) e **execução do contrato**. A lista completa fica recolhida no
+  fim, com busca, como registro auditável.
 - **Checklist fixo** — as mesmas perguntas para qualquer edital (balanço, amostra, garantias,
   registro de preços...), com prazos de esclarecimento e impugnação calculados em dias úteis.
 - **Visão geral, itens e nota de atratividade** (0-10: a IA pontua seis critérios e a média

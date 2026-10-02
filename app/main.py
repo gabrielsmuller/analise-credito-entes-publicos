@@ -23,7 +23,7 @@ from .collectors.pncp import coletar_pncp
 from .collectors.siconfi import coletar_siconfi
 from .collectors.transparencia import coletar_convenios, coletar_transferencias, coletar_transparencia
 from .dossier import extrair_serasa, gerar_dossie, responder_pergunta
-from .edital_exigencias import extrair_exigencias, resumir_exigencias
+from .edital_exigencias import CATEGORIAS, extrair_exigencias, normalizar_item, resumir_exigencias
 from .edital_ia import analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
@@ -587,6 +587,20 @@ async def ver_edital(request: Request, edital_id: int):
         return HTMLResponse("Edital não encontrado", status_code=404)
     dados = edital.get("dados") or {}
     resumo_html = md.markdown(edital["resumo_md"], extensions=["tables"]) if edital.get("resumo_md") else None
+
+    # especificações do produto ficam junto da tabela de itens: casa o número do
+    # item da matriz ("1") com o da tabela ("01"); número fora da tabela vale para todos
+    chaves_tabela = set()
+    for item in dados.get("itens") or []:
+        item["chave_item"] = normalizar_item(item.get("numero"))
+        chaves_tabela.add(item["chave_item"])
+    matriz = resumir_exigencias(dados.get("exigencias"), itens_validos=chaves_tabela - {None})
+    specs_gerais, specs_por_item = [], {}
+    for grupo in (matriz or {}).get("produto", []):
+        if grupo["item"] is None:
+            specs_gerais = grupo["exigencias"]
+        else:
+            specs_por_item[grupo["item"]] = grupo["exigencias"]
     return templates.TemplateResponse(
         request,
         "edital.html",
@@ -599,7 +613,10 @@ async def ver_edital(request: Request, edital_id: int):
             # análises anteriores ao checklist fixo não o têm: a tela oferece reanalisar
             "checklist": dados.get("checklist") if isinstance(dados.get("checklist"), list) else None,
             "conferencia": _conferir_itens(dados),
-            "matriz": resumir_exigencias(dados.get("exigencias")),
+            "matriz": matriz,
+            "categorias": CATEGORIAS,
+            "specs_gerais": specs_gerais,
+            "specs_por_item": specs_por_item,
             "credito": _credito_do_orgao(dados),
             "mensagens": db.listar_mensagens_edital(edital_id),
         },
