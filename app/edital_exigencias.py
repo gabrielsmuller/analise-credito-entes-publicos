@@ -16,6 +16,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
+from .config import OPENAI_MODEL_EXTRACAO
 from .edital_ia import _chamar_json
 
 CATEGORIAS = {
@@ -45,6 +46,15 @@ MAX_PARALELO = 8
 # ~7 min no pior caso - dentro do teto de 15 min do Lambda. Acima disso, corta e AVISA.
 LIMITE_MATRIZ = 800_000
 
+# Produtos cuja especificação técnica interessa. Editais mistos (o do IFFar tem 55
+# itens, ~16 de climatização) geravam centenas de linhas de liquidificador e geladeira -
+# e o custo da extração é quase todo o texto gerado. Os demais itens viram uma linha.
+ESCOPO_PRODUTOS = (
+    "climatização: ar-condicionado (split, cassete, piso-teto, janela, VRF, portátil), "
+    "climatizador evaporativo, cortina de ar, desumidificador, ventilação e exaustão, "
+    "e peças, acessórios e serviços desses equipamentos"
+)
+
 SYSTEM_EXIGENCIAS = """Você recebe UM TRECHO de um edital de licitação (as páginas vêm marcadas \
 com "=== página N ==="). Liste TODAS as exigências, obrigações, condições, prazos, especificações \
 técnicas e penalidades que o trecho impõe ao licitante ou ao contratado.
@@ -52,10 +62,11 @@ técnicas e penalidades que o trecho impõe ao licitante ou ao contratado.
 Regras:
 - Seja exaustivo: cada obrigação vira UMA linha própria. Não resuma, não junte várias exigências \
 numa linha, não omita por parecer óbvio ou repetido. Na dúvida, inclua.
-- Especificações técnicas de produto: uma linha por requisito, indicando o item do objeto \
-(ex.: item 2, "serpentina de cobre"; item 2, "gás refrigerante R32"; item 2, "vazão de ar de 860 m3/h"). \
-Nelas seja breve: "exigencia" com no máximo 12 palavras (ex.: "Item 2: gás refrigerante R32") e \
-"trecho" com 40 a 80 caracteres.
+- Especificações técnicas de produto: SÓ para itens de __ESCOPO__. Nesses, uma linha por \
+requisito, indicando o item (ex.: item 2, "serpentina de cobre"; item 2, "gás refrigerante R32"), \
+breve: "exigencia" com no máximo 12 palavras (ex.: "Item 2: gás refrigerante R32") e "trecho" com \
+40 a 80 caracteres. Para itens de outros produtos (eletrodomésticos, móveis, etc.), NÃO detalhe a \
+especificação técnica: registre só UMA linha por item, ex.: "Item 32: forno micro-ondas 20 L".
 - Inclua também regras de julgamento que afetam o licitante: preço máximo, critério de \
 inexequibilidade (ex.: "abaixo de 50% do orçado"), motivos de desclassificação e de inabilitação.
 - Ignore o que não impõe nada ao fornecedor: justificativas, fundamentos legais genéricos, \
@@ -65,12 +76,12 @@ definições, obrigações exclusivas da Administração.
 como está (mesmas palavras, sem corrigir nem reescrever).
 - "curto": a exigência em até 8 palavras (ex.: "gás refrigerante R32", "balanço dos 2 últimos \
 exercícios", "entrega em 10 dias úteis").
-- "padrao": true se for exigência de rotina, presente em praticamente qualquer pregão da Lei \
+- marca "R" (rotina) se for exigência de rotina, presente em praticamente qualquer pregão da Lei \
 14.133 (certidões fiscais e trabalhistas usuais, contrato social, declarações-padrão, regras gerais \
-do sistema eletrônico, sanções transcritas da lei sem números próprios). false se for particular \
+do sistema eletrônico, sanções transcritas da lei sem números próprios). Sem "R" se for particular \
 deste edital ou trouxer número, prazo, valor ou condição definidos por ele (especificações técnicas, \
 prazos de entrega, índices contábeis, multas com percentuais próprios, catálogo, amostra...). \
-Na dúvida, false.
+Na dúvida, sem "R".
 - "documento": só quando a exigência pede que o licitante APRESENTE um documento para participar \
 - no credenciamento, junto com a proposta ou na habilitação. Use o nome curto e padronizado \
 (ex.: "Balanço patrimonial", "Certidão negativa de falência", "Atestado de capacidade técnica", \
@@ -78,21 +89,27 @@ Na dúvida, false.
 para o mesmo documento. NÃO é documento: o que só se usa depois (nota fiscal, recurso, pedido de \
 esclarecimento ou impugnação, ordem de fornecimento, manual ou certificado entregue com o produto) \
 - nesses casos, null.
-- "condicional": true SOMENTE se a exigência vale apenas para estes casos: cooperativa, MEI, \
+- marca "C" (condicional) SOMENTE se a exigência vale apenas para estes casos: cooperativa, MEI, \
 empresário individual, sociedade simples, empresa estrangeira, consórcio, empresa em recuperação \
 judicial, filial ou agência, ME/EPP que queira o benefício. O licitante típico é uma sociedade \
 empresária limitada: o que se pede dela (contrato social, alterações, documentos dos \
-administradores) e o que vale para todos (regularidade fiscal, trabalhista, FGTS, inscrições) é \
-false.
+administradores) e o que vale para todos (regularidade fiscal, trabalhista, FGTS, inscrições) não \
+leva "C".
 - Use o hífen simples "-"; nunca o travessão longo.
 
-Devolva APENAS JSON:
-{"exigencias": [{"categoria": "__CATEGORIAS__", "item": "número do item do objeto ou null", \
-"exigencia": "...", "curto": "...", "padrao": true/false, "documento": "... ou null", \
-"condicional": true/false, \
-"clausula": "numeração da cláusula ou null", \
-"consequencia": "o que acontece se descumprir (desclassificação, inabilitação, multa...) ou null", \
-"trecho": "..."}]}""".replace("__CATEGORIAS__", "|".join(CATEGORIAS))
+Devolva APENAS JSON, em formato COMPACTO: cada exigência é uma LISTA de 9 valores, nesta ordem, \
+sem nomes de campo:
+{"e": [[categoria, item, exigencia, curto, marcas, documento, clausula, consequencia, trecho], ...]}
+- categoria: um de __CATEGORIAS__
+- item: número do item do objeto, ou null
+- marcas: "", "R", "C" ou "RC"
+- consequencia: o que acontece se descumprir (desclassificação, inabilitação, multa...), ou null
+- documento, clausula: null quando não houver
+Exemplo: {"e": [["habilitacao_economica", null, "Apresentar balanço patrimonial dos 2 últimos \
+exercícios", "balanço dos 2 últimos exercícios", "", "Balanço patrimonial", "12.1.3", "inabilitação", \
+"Balanço patrimonial e demonstrações contábeis dos dois últimos exercícios"]]}""".replace(
+    "__CATEGORIAS__", "|".join(CATEGORIAS)
+).replace("__ESCOPO__", ESCOPO_PRODUTOS)
 
 
 def _normalizar(texto: str) -> str:
@@ -301,7 +318,7 @@ def _ler_bloco(bloco: list[tuple[int, str]], prazo_final: float, profundidade: i
     try:
         resp = _chamar_json(
             SYSTEM_EXIGENCIAS, "Trecho do edital:\n\n" + _texto_bloco(bloco),
-            timeout=min(TIMEOUT_BLOCO, restante - 15), retries=0,
+            timeout=min(TIMEOUT_BLOCO, restante - 15), retries=0, modelo=OPENAI_MODEL_EXTRACAO,
         )
         return [resp], []
     except Exception:  # noqa: BLE001 - timeout ou resposta inválida: divide e tenta de novo
@@ -313,6 +330,29 @@ def _ler_bloco(bloco: list[tuple[int, str]], prazo_final: float, profundidade: i
         respostas = [r for rs, _ in resultados for r in rs]
         falhas = sorted({n for _, fs in resultados for n in fs})
         return respostas, falhas
+
+
+_CAMPOS_COMPACTOS = ("categoria", "item", "exigencia", "curto", "marcas", "documento",
+                     "clausula", "consequencia", "trecho")
+
+
+def _linhas(resp: dict | None) -> list[dict]:
+    """Converte a resposta compacta ({"e": [[...9 valores...]]}) em dicionários.
+
+    O formato compacto existe por custo: sem repetir os nomes dos campos a cada linha,
+    a IA gera bem menos texto. Aceita também o formato antigo ({"exigencias": [{...}]}).
+    """
+    resp = resp or {}
+    saida = []
+    for linha in resp.get("e") or []:
+        if not isinstance(linha, list) or len(linha) < 3:
+            continue
+        e = dict(zip(_CAMPOS_COMPACTOS, linha + [None] * (len(_CAMPOS_COMPACTOS) - len(linha))))
+        marcas = str(e.pop("marcas") or "").upper()
+        e["padrao"], e["condicional"] = "R" in marcas, "C" in marcas
+        saida.append(e)
+    saida.extend(e for e in resp.get("exigencias") or [] if isinstance(e, dict))
+    return saida
 
 
 def extrair_exigencias(texto: str) -> tuple[list[dict], list[int]]:
@@ -336,7 +376,7 @@ def extrair_exigencias(texto: str) -> tuple[list[dict], list[int]]:
 
     brutas = []
     for resp in respostas:
-        for e in (resp or {}).get("exigencias") or []:
+        for e in _linhas(resp):
             if not isinstance(e, dict) or not _limpar(e.get("exigencia")):
                 continue
             situacao, pagina = _localizar(e.get("trecho") or "", paginas_norm, shingles_pag)

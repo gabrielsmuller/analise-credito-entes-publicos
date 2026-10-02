@@ -413,7 +413,8 @@
       <span class="verif falta">!</span> trecho não encontrado - confira no edital antes de confiar.</p>
   </details>
   {% endif %}
-  <p class="dica" style="margin:0.8rem 0 0">Arquivo: {{ edital.arquivo }} · enviado em {{ edital.criado_em|data_br }}</p>
+  <p class="dica" style="margin:0.8rem 0 0">Arquivo: {{ edital.arquivo }} · enviado em {{ edital.criado_em|data_br }}
+    {% if e.custo_ia %} · custo da análise na OpenAI: US$ {{ e.custo_ia.usd|numero(2) }}{% endif %}</p>
 </div>
 {% endif %}
 

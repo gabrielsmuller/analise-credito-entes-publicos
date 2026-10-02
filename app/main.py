@@ -27,7 +27,8 @@ from .edital_exigencias import (
     CATEGORIAS, LIMITE_MATRIZ, extrair_exigencias, normalizar_item, resumir_exigencias,
 )
 from .edital_ia import (
-    MAX_CARACTERES, analisar_edital, prazos_edital, responder_pergunta_edital, situacao_prazo,
+    MAX_CARACTERES, analisar_edital, custo_contado, iniciar_contagem, prazos_edital,
+    responder_pergunta_edital, situacao_prazo,
 )
 from .scoring import calcular_scorecard
 from .serasa import extrair_texto_pdf, normalizar_serasa, parece_relatorio_serasa
@@ -304,6 +305,7 @@ async def _processar_edital(job_id: str, edital_id: int) -> None:
         edital = db.buscar_edital(edital_id)
         if edital is None:
             raise ValueError(f"edital {edital_id} não encontrado")
+        iniciar_contagem()
         # leitura geral e matriz de exigências rodam em paralelo (chamadas independentes)
         geral, matriz = await asyncio.gather(
             asyncio.to_thread(analisar_edital, edital["texto"]),
@@ -329,6 +331,7 @@ async def _processar_edital(job_id: str, edital_id: int) -> None:
                 "matriz": min(total, LIMITE_MATRIZ),
                 "matriz_cortada": total > LIMITE_MATRIZ,
             }
+        dados["custo_ia"] = custo_contado()  # mostrado na tela, para acompanhar o gasto
         resumo_md = dados.pop("visao_geral_md", None)
         db.concluir_edital(edital_id, dados, resumo_md)
         db.atualizar_job(job_id, "pronto", analise_id=edital_id)

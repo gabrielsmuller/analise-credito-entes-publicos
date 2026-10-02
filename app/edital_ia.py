@@ -9,9 +9,10 @@ para manter auditável:
   - a situação do prazo (aberto/encerrado) é calculada pela data, não pela IA.
 """
 import json
+import threading
 from datetime import date, timedelta
 
-from .config import ANTHROPIC_MODEL, LLM_PROVIDER, OPENAI_MODEL
+from .config import ANTHROPIC_MODEL, LLM_PROVIDER, OPENAI_MODEL, OPENAI_MODEL_EXTRACAO
 from .dossier import IA_RETRIES, IA_TIMEOUT, _extrair_json
 
 # Editais muito longos são cortados para caber no contexto do modelo com folga.
@@ -202,19 +203,68 @@ def prazos_edital(dados: dict | None, hoje: date | None = None) -> list[dict]:
     return prazos
 
 
-def _chamar_json(system: str, usuario: str, timeout: float | None = None, retries: int | None = None) -> dict:
-    """Chamada que devolve JSON. timeout/retries próprios servem à matriz de exigências,
-    que prefere dividir um bloco lento a repetir o mesmo pedido."""
+# --- Custo das chamadas ----------------------------------------------------
+# US$ por milhão de tokens (entrada, entrada em cache, saída) - tabela oficial da OpenAI,
+# consultada em 2026-10-02. Serve para mostrar o custo de cada análise na tela.
+PRECOS_USD = {
+    "gpt-5.6-terra": (2.00, 0.20, 12.00),
+    "gpt-5.6-sol": (4.00, 0.40, 20.00),
+    "gpt-5.6-luna": (0.20, 0.02, 1.20),
+    "gpt-5.4-mini": (0.75, 0.075, 4.50),
+    "gpt-5-mini": (0.25, 0.025, 2.00),
+}
+_uso_lock = threading.Lock()
+_uso: dict[str, list[int]] = {}  # modelo -> [entrada, cache, saída]
+
+
+def iniciar_contagem() -> None:
+    """Zera o contador (um job por vez por container do Lambda)."""
+    with _uso_lock:
+        _uso.clear()
+
+
+def _registrar_uso(modelo: str, usage) -> None:
+    if usage is None:
+        return
+    cache = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+    with _uso_lock:
+        t = _uso.setdefault(modelo, [0, 0, 0])
+        t[0] += (usage.prompt_tokens or 0) - cache
+        t[1] += cache
+        t[2] += usage.completion_tokens or 0
+
+
+def custo_contado() -> dict:
+    """Custo estimado das chamadas desde iniciar_contagem()."""
+    with _uso_lock:
+        total, por_modelo = 0.0, {}
+        for modelo, (ent, cache, saida) in _uso.items():
+            pe, pc, ps = PRECOS_USD.get(modelo, (0, 0, 0))
+            usd = (ent * pe + cache * pc + saida * ps) / 1e6
+            total += usd
+            por_modelo[modelo] = {"usd": round(usd, 4), "tokens_saida": saida, "tokens_entrada": ent + cache}
+    return {"usd": round(total, 4), "por_modelo": por_modelo}
+
+
+def _chamar_json(
+    system: str, usuario: str, timeout: float | None = None, retries: int | None = None,
+    modelo: str | None = None,
+) -> dict:
+    """Chamada que devolve JSON. timeout/retries/modelo próprios servem à matriz de
+    exigências, que prefere dividir um bloco lento a repetir o pedido e usa um modelo
+    mais barato (ver OPENAI_MODEL_EXTRACAO)."""
     timeout = IA_TIMEOUT if timeout is None else timeout
     retries = IA_RETRIES if retries is None else retries
     if LLM_PROVIDER == "openai":
         from openai import OpenAI
 
+        modelo = modelo or OPENAI_MODEL
         resp = OpenAI(timeout=timeout, max_retries=retries).chat.completions.create(
-            model=OPENAI_MODEL,
+            model=modelo,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system}, {"role": "user", "content": usuario}],
         )
+        _registrar_uso(modelo, resp.usage)
         escolha = resp.choices[0]
         if escolha.finish_reason == "length":
             raise RuntimeError("análise do edital truncada pelo limite de tokens")
@@ -287,7 +337,9 @@ def situacao_prazo(data_abertura: str | None, hoje: date | None = None) -> dict 
 
 def analisar_edital(texto: str) -> dict:
     """Extrai os dados do edital, a avaliação e a visão geral (uma chamada à IA)."""
-    dados = _chamar_json(SYSTEM_EDITAL, "Analise o edital a seguir:\n\n" + _texto_limitado(texto))
+    # modelo de extração: testado no checklist de Sananduva (13/13), itens e soma exatos
+    dados = _chamar_json(SYSTEM_EDITAL, "Analise o edital a seguir:\n\n" + _texto_limitado(texto),
+                         modelo=OPENAI_MODEL_EXTRACAO)
     dados["nota_atratividade"] = calcular_nota(dados.get("avaliacao"))
     dados["checklist"] = normalizar_checklist(dados.get("checklist"))
     return dados

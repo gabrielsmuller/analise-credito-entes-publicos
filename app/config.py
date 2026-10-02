@@ -31,6 +31,10 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
 
 # Cada SDK lê sua própria variável de ambiente (OPENAI_API_KEY / ANTHROPIC_API_KEY).
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
+# Extração da matriz de exigências dos editais: transcrição em volume (centenas de
+# linhas por edital), onde quase todo o custo é texto gerado. Um modelo menor extrai
+# o mesmo a uma fração do preço; a redação (dossiê, visão geral, chat) segue no principal.
+OPENAI_MODEL_EXTRACAO = os.getenv("OPENAI_MODEL_EXTRACAO", "gpt-5.6-luna")
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-opus-5")
 
 # Acesso ao app. Se APP_SENHA estiver definida, todas as rotas exigem login.
