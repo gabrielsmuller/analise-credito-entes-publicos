@@ -11,6 +11,7 @@ Depois o código:
 As categorias são fixas, para que editais diferentes caiam na mesma estrutura.
 """
 import re
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
@@ -34,8 +35,11 @@ CATEGORIAS = {
 # consequências que tiram o licitante da disputa ou do contrato
 CONSEQUENCIAS_GRAVES = ("desclassifica", "inabilita", "rescis", "impediment", "inidone")
 
-TAMANHO_BLOCO = 24_000  # caracteres por chamada; blocos menores = leitura mais atenta
-MAX_PARALELO = 6
+# Caracteres por chamada. O tempo de resposta cresce com o número de exigências
+# devolvidas, e trechos com tabelas de especificação são muito densos: blocos menores
+# e mais paralelos evitam que um bloco só segure a análise inteira.
+TAMANHO_BLOCO = 16_000
+MAX_PARALELO = 8
 # Lida em blocos, a matriz aceita bem mais texto que a leitura geral (uma chamada só,
 # limitada pelo contexto do modelo). 800 mil caracteres ~ 250 páginas ~ 34 blocos,
 # ~7 min no pior caso - dentro do teto de 15 min do Lambda. Acima disso, corta e AVISA.
@@ -49,13 +53,15 @@ Regras:
 - Seja exaustivo: cada obrigação vira UMA linha própria. Não resuma, não junte várias exigências \
 numa linha, não omita por parecer óbvio ou repetido. Na dúvida, inclua.
 - Especificações técnicas de produto: uma linha por requisito, indicando o item do objeto \
-(ex.: item 2, "serpentina de cobre"; item 2, "gás refrigerante R32"; item 2, "vazão de ar de 860 m3/h").
+(ex.: item 2, "serpentina de cobre"; item 2, "gás refrigerante R32"; item 2, "vazão de ar de 860 m3/h"). \
+Nelas seja breve: "exigencia" com no máximo 12 palavras (ex.: "Item 2: gás refrigerante R32") e \
+"trecho" com 40 a 80 caracteres.
 - Inclua também regras de julgamento que afetam o licitante: preço máximo, critério de \
 inexequibilidade (ex.: "abaixo de 50% do orçado"), motivos de desclassificação e de inabilitação.
 - Ignore o que não impõe nada ao fornecedor: justificativas, fundamentos legais genéricos, \
 definições, obrigações exclusivas da Administração.
 - "exigencia": frase completa e autossuficiente, com os números, prazos e valores do texto.
-- "trecho": cópia LITERAL de 40 a 250 caracteres do edital que sustenta a exigência, exatamente \
+- "trecho": cópia LITERAL de 40 a 150 caracteres do edital que sustenta a exigência, exatamente \
 como está (mesmas palavras, sem corrigir nem reescrever).
 - "curto": a exigência em até 8 palavras (ex.: "gás refrigerante R32", "balanço dos 2 últimos \
 exercícios", "entrega em 10 dias úteis").
@@ -109,18 +115,35 @@ def paginas_do_texto(texto: str) -> list[str]:
     return paginas or [texto]
 
 
-def _blocos(paginas: list[str]) -> list[str]:
+def _blocos(paginas: list[str]) -> list[list[tuple[int, str]]]:
+    """Agrupa páginas em blocos de ~TAMANHO_BLOCO; cada bloco guarda (nº da página, texto)."""
     blocos, atual, tamanho = [], [], 0
     for n, pagina in enumerate(paginas, 1):
-        trecho = f"=== página {n} ===\n{pagina}"
-        if atual and tamanho + len(trecho) > TAMANHO_BLOCO:
-            blocos.append("\n".join(atual))
+        if atual and tamanho + len(pagina) > TAMANHO_BLOCO:
+            blocos.append(atual)
             atual, tamanho = [], 0
-        atual.append(trecho)
-        tamanho += len(trecho)
+        atual.append((n, pagina))
+        tamanho += len(pagina)
     if atual:
-        blocos.append("\n".join(atual))
+        blocos.append(atual)
     return blocos
+
+
+def _texto_bloco(bloco: list[tuple[int, str]]) -> str:
+    return "\n".join(f"=== página {n} ===\n{texto}" for n, texto in bloco)
+
+
+def _dividir(bloco: list[tuple[int, str]]) -> list[list[tuple[int, str]]] | None:
+    """Parte um bloco ao meio: por páginas, ou pela metade da página se for uma só."""
+    if len(bloco) > 1:
+        meio = len(bloco) // 2
+        return [bloco[:meio], bloco[meio:]]
+    n, texto = bloco[0]
+    if len(texto) < 4000:
+        return None
+    corte = texto.rfind("\n", 0, len(texto) // 2)
+    corte = corte if corte > 0 else len(texto) // 2
+    return [[(n, texto[:corte])], [(n, texto[corte:])]]
 
 
 def _localizar(trecho: str, paginas_norm: list[str], shingles_pag: list[set]) -> tuple[str, int | None]:
@@ -180,17 +203,24 @@ def _chave_comparacao(texto: str) -> str:
     return re.sub(r"\s+", " ", t).strip()
 
 
+def _numeros(tokens) -> set:
+    return {w for w in tokens if any(c.isdigit() for c in w)}
+
+
 def _mesma_exigencia(a: str, b: str) -> bool:
-    """Quase idênticas, ou uma contida na outra (mesmos números e termos)."""
-    if SequenceMatcher(None, a, b).ratio() >= 0.85:
-        return True
+    """Quase idênticas, ou uma contida na outra - nunca com números diferentes.
+
+    A trava de números vale nos dois caminhos: frases quase iguais que diferem só
+    no número ("prazo de 10 dias" x "prazo de 30 dias") são exigências distintas.
+    """
     ta = {w for w in a.split() if w not in _PALAVRAS_VAZIAS}
     tb = {w for w in b.split() if w not in _PALAVRAS_VAZIAS}
+    if SequenceMatcher(None, a, b).ratio() >= 0.85:
+        return _numeros(ta) == _numeros(tb)
     menor, maior = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     if len(menor) < 3:
         return False
-    # números diferentes nunca se fundem (10 dias x 30 dias, 12.000 x 18.000 BTU)
-    if {w for w in menor if any(c.isdigit() for c in w)} - maior:
+    if _numeros(menor) - maior:
         return False
     return len(menor & maior) / len(menor) >= 0.9
 
@@ -249,14 +279,57 @@ def _limpar(valor) -> str | None:
     return texto if texto and texto.lower() not in ("null", "none", "-") else None
 
 
-def extrair_exigencias(texto: str) -> list[dict]:
-    """Matriz exaustiva de exigências: leitura em blocos, dedupe e verificação."""
+# Um bloco denso (ex.: tabela com as especificações de 55 itens) gera centenas de
+# linhas e pode passar de 3 minutos - medido: 196s e 148 exigências num bloco de 23 mil
+# caracteres. Repetir o mesmo pedido só repete o estouro; o bloco lento é DIVIDIDO e
+# as metades são lidas em paralelo. Tudo dentro de um orçamento de tempo que cabe no
+# teto de 15 min do Lambda (a leitura geral roda em paralelo a isto).
+TIMEOUT_BLOCO = 240
+ORCAMENTO_SEGUNDOS = 780
+PROFUNDIDADE_MAX = 2
+
+
+def _ler_bloco(bloco: list[tuple[int, str]], prazo_final: float, profundidade: int = 0):
+    """Lê um bloco; se estourar o tempo ou falhar, divide e tenta as metades.
+
+    Devolve (lista de respostas JSON, páginas que não puderam ser lidas).
+    """
+    restante = prazo_final - time.monotonic()
+    paginas = sorted({n for n, _ in bloco})
+    if restante < 60:
+        return [], paginas
+    try:
+        resp = _chamar_json(
+            SYSTEM_EXIGENCIAS, "Trecho do edital:\n\n" + _texto_bloco(bloco),
+            timeout=min(TIMEOUT_BLOCO, restante - 15), retries=0,
+        )
+        return [resp], []
+    except Exception:  # noqa: BLE001 - timeout ou resposta inválida: divide e tenta de novo
+        partes = _dividir(bloco) if profundidade < PROFUNDIDADE_MAX else None
+        if not partes:
+            return [], paginas
+        with ThreadPoolExecutor(max_workers=len(partes)) as pool:
+            resultados = list(pool.map(lambda p: _ler_bloco(p, prazo_final, profundidade + 1), partes))
+        respostas = [r for rs, _ in resultados for r in rs]
+        falhas = sorted({n for _, fs in resultados for n in fs})
+        return respostas, falhas
+
+
+def extrair_exigencias(texto: str) -> tuple[list[dict], list[int]]:
+    """Matriz exaustiva de exigências: leitura em blocos, dedupe e verificação.
+
+    Devolve (exigências, páginas que não puderam ser lidas). Um trecho que falha não
+    descarta o resto: as páginas dele ficam listadas para a tela avisar.
+    """
     paginas = paginas_do_texto(texto[:LIMITE_MATRIZ])
     blocos = _blocos(paginas)
+    prazo_final = time.monotonic() + ORCAMENTO_SEGUNDOS
     with ThreadPoolExecutor(max_workers=MAX_PARALELO) as pool:
-        respostas = list(pool.map(
-            lambda b: _chamar_json(SYSTEM_EXIGENCIAS, "Trecho do edital:\n\n" + b), blocos
-        ))
+        resultados = list(pool.map(lambda b: _ler_bloco(b, prazo_final), blocos))
+    respostas = [r for rs, _ in resultados for r in rs]
+    paginas_falhas = sorted({n for _, fs in resultados for n in fs})
+    if not respostas:
+        raise RuntimeError("nenhum trecho do edital pôde ser lido pela IA")
 
     paginas_norm = [_normalizar(p) for p in paginas]
     shingles_pag = [_shingles(p) for p in paginas_norm]
@@ -288,7 +361,7 @@ def extrair_exigencias(texto: str) -> list[dict]:
     ordem = list(CATEGORIAS)
     unicas = _deduplicar(brutas)
     unicas.sort(key=lambda e: (ordem.index(e["categoria"]), (e["item"] or "").zfill(4), e["pagina"] or 9999))
-    return unicas
+    return unicas, paginas_falhas
 
 
 CATEGORIAS_EXECUCAO = ("entrega_execucao", "recebimento_pagamento", "garantia_assistencia", "sancoes")

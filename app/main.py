@@ -317,7 +317,9 @@ async def _processar_edital(job_id: str, edital_id: int) -> None:
             # a matriz falhar não descarta a leitura geral: fica registrado na tela
             dados["exigencias_erro"] = f"{type(matriz).__name__}: {matriz}"
         else:
-            dados["exigencias"] = matriz
+            dados["exigencias"], paginas_falhas = matriz
+            if paginas_falhas:
+                dados["exigencias_paginas_falhas"] = paginas_falhas
         # edital longo demais é cortado - e isso precisa aparecer na tela, nunca em silêncio
         total = len(edital["texto"])
         if total > MAX_CARACTERES:

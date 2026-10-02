@@ -92,6 +92,15 @@
 </div>
 {% endif %}
 
+{% if e.exigencias_paginas_falhas %}
+<div class="aviso-erro">
+  <strong>⚠ Algumas páginas não puderam ser lidas.</strong>
+  As exigências das páginas {{ e.exigencias_paginas_falhas|join(", ") }} ficaram de fora (a IA não
+  respondeu a tempo nem com o trecho dividido). O restante da análise está completo. Use
+  "Reanalisar edital" no fim da página para tentar de novo.
+</div>
+{% endif %}
+
 <!-- ===== O que este edital pede de diferente ===== -->
 {% if matriz and matriz.classificado %}
 <div class="cartao destaque-edital">

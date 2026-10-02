@@ -202,11 +202,15 @@ def prazos_edital(dados: dict | None, hoje: date | None = None) -> list[dict]:
     return prazos
 
 
-def _chamar_json(system: str, usuario: str) -> dict:
+def _chamar_json(system: str, usuario: str, timeout: float | None = None, retries: int | None = None) -> dict:
+    """Chamada que devolve JSON. timeout/retries próprios servem à matriz de exigências,
+    que prefere dividir um bloco lento a repetir o mesmo pedido."""
+    timeout = IA_TIMEOUT if timeout is None else timeout
+    retries = IA_RETRIES if retries is None else retries
     if LLM_PROVIDER == "openai":
         from openai import OpenAI
 
-        resp = OpenAI(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).chat.completions.create(
+        resp = OpenAI(timeout=timeout, max_retries=retries).chat.completions.create(
             model=OPENAI_MODEL,
             response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system}, {"role": "user", "content": usuario}],
@@ -218,7 +222,7 @@ def _chamar_json(system: str, usuario: str) -> dict:
 
     import anthropic
 
-    with anthropic.Anthropic(timeout=IA_TIMEOUT, max_retries=IA_RETRIES).messages.stream(
+    with anthropic.Anthropic(timeout=timeout, max_retries=retries).messages.stream(
         model=ANTHROPIC_MODEL,
         max_tokens=16000,
         system=system,
