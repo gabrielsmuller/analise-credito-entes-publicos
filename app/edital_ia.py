@@ -71,7 +71,7 @@ avalie; a decisão é do setor de licitações.
 
 O "checklist" deve ter EXATAMENTE estas chaves, todas preenchidas:
 __CHAVES__
-Em "resposta": "sim" ou "não" quando o edital trata do assunto; "não consta" quando o edital não menciona. Nunca deixe uma chave de fora. Para validade_proposta e vigencia, responda "sim" e ponha o prazo em "detalhe".
+Em "resposta": "sim" ou "não" quando o edital trata do assunto; "não consta" quando o edital não menciona. Se o edital LISTA os documentos de habilitação (ou os requisitos daquele assunto) e o item perguntado não está na lista, a resposta é "não", não "não consta". Nunca deixe uma chave de fora. Para validade_proposta e vigencia, responda "sim" e ponha o prazo em "detalhe".
 Nas perguntas "Exige...?", responda "sim" SOMENTE se o edital obriga o licitante a apresentar ou \
 cumprir aquilo. Menções genéricas em cláusulas-padrão de sanção ou pagamento (ex.: "perda da \
 garantia de proposta", "descontada da garantia prestada") NÃO são exigência: se o edital não pede \

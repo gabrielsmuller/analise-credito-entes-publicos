@@ -107,7 +107,7 @@
   <h3 class="titulo-secao">O que este edital pede de diferente</h3>
   <p class="dica" style="margin-top:0">Exigências próprias deste edital que <strong>eliminam</strong> a
     proposta ou o licitante se não forem cumpridas. O que é rotina de qualquer pregão
-    ({{ matriz.padrao }} exigências) fica fora daqui, na lista completa.</p>
+    fica fora daqui, na lista completa.</p>
   {% if matriz.destaques %}
   <table>
     <tbody>
@@ -321,7 +321,8 @@
 {% if matriz and matriz.execucao %}
 <div class="cartao">
   <h3 class="titulo-secao">Execução do contrato</h3>
-  <p class="dica" style="margin-top:0">Prazos, recebimento, pagamento, garantia e multas próprios deste edital.</p>
+  <p class="dica" style="margin-top:0">Prazos, percentuais e valores de entrega, recebimento, pagamento,
+    garantia e multas. As demais obrigações do contrato estão na lista completa.</p>
   {% for cat in ["entrega_execucao", "recebimento_pagamento", "garantia_assistencia", "sancoes"] %}
   {% set linhas = matriz.execucao|selectattr("categoria", "equalto", cat)|list %}
   {% if linhas %}
@@ -329,7 +330,8 @@
     <summary><strong>{{ categorias[cat] }}</strong> <span class="dica">({{ linhas|length }})</span></summary>
     <ul>
       {% for x in linhas %}
-      <li>{{ x.exigencia }} <span class="dica">{{ x.clausulas[:2]|join(", ") }}{% if x.pagina %} · p. {{ x.pagina }}{% endif %}</span></li>
+      <li>{{ x.exigencia }}{% if x.itens|length > 1 %} <span class="dica">(itens {{ x.itens|join(", ") }})</span>{% endif %}
+        <span class="dica">{{ x.clausulas[:2]|join(", ") }}{% if x.paginas %} · p. {{ x.paginas[:3]|join(", ") }}{% endif %}</span></li>
       {% endfor %}
     </ul>
   </details>

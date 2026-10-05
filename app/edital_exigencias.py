@@ -16,7 +16,7 @@ import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
-from .config import OPENAI_MODEL_EXTRACAO
+from .config import OPENAI_MODEL, OPENAI_MODEL_EXTRACAO
 from .edital_ia import _chamar_json
 
 CATEGORIAS = {
@@ -401,7 +401,83 @@ def extrair_exigencias(texto: str) -> tuple[list[dict], list[int]]:
     ordem = list(CATEGORIAS)
     unicas = _deduplicar(brutas)
     unicas.sort(key=lambda e: (ordem.index(e["categoria"]), (e["item"] or "").zfill(4), e["pagina"] or 9999))
+    revisar_destaques(unicas)
     return unicas, paginas_falhas
+
+
+SYSTEM_DESTAQUES = """Você é analista de licitações de uma distribuidora que disputa muitos \
+pregões eletrônicos da Lei 14.133. Abaixo, exigências extraídas de UM edital, candidatas ao quadro \
+"O que este edital pede de diferente" - o que o licitante precisa preparar ou cuidar ESPECIALMENTE \
+neste edital, além da rotina.
+
+Mantenha SÓ o que um licitante experiente não encontraria em qualquer pregão: documento incomum, \
+índice contábil, capital ou patrimônio mínimo, atestado com quantitativo, amostra, certificação, \
+visita, garantia, prazo ou percentual fora do usual, condição particular deste órgão.
+
+Descarte a rotina, mesmo que traga número ou prazo: regras do sistema eletrônico e do SICAF \
+(prazos de cadastro, envio de documentos ou readequação em 2 horas), declarações-padrão \
+(trabalho infantil, condenação trabalhista, custos trabalhistas, ME/EPP), documentos de praxe \
+(contrato social, documentos dos administradores, certidões fiscais e trabalhistas usuais), \
+critério legal de inexequibilidade, validade de proposta de até 90 dias, regras tributárias \
+gerais (alíquotas, média de tributos recolhidos, EFD, desoneração), data e hora da sessão, valor \
+máximo estimado da contratação (já aparece na tabela de itens), e frases sem conteúdo próprio \
+("cumprir o prazo assinalado", "observar o item X").
+Na dúvida, descarte: o quadro só tem valor se for curto. Um edital de modelo padrão pode não ter \
+nenhum destaque.
+
+Devolva APENAS JSON: {"manter": [números das exigências mantidas]} - lista vazia se nenhuma."""
+
+
+def _numero_da_regra(texto: str) -> bool:
+    """Número que é da regra (prazo, valor, índice), e não referência a cláusula ("item 3.4")."""
+    ref = r"(n[º°o.]*\s*)?[\dIVX][\d./\-ºª]*"
+    sem_referencias = re.sub(
+        r"(\b(ite[mn]s?|subite[mn]s?|cl[aá]usulas?|se[cç][aã]o|anexo|art(igo)?s?\.?|incisos?|al[ií]neas?|"
+        r"par[aá]grafo|lei|decreto|in|instru[cç][aã]o normativa)|§+)\s*" + ref
+        + r"((\s*,\s*|\s+(e|a|ou)\s+)" + ref + r")*",  # listas: "itens 5.4, 5.5 e 5.6"
+        " ", texto, flags=re.IGNORECASE)
+    sem_referencias = re.sub(r",?\s+de\s+(19|20)\d\d\b", " ", sem_referencias)  # "Lei ..., de 2021"
+    return _tem_numero(sem_referencias)
+
+
+def _candidato_destaque(e: dict) -> bool:
+    """Específica, eliminatória e CONCRETA: pede um documento ou traz um número da regra.
+
+    Regras genéricas que a IA às vezes marca como específicas ("obedecer às
+    especificações", "preço dentro do máximo") ficam na lista completa.
+    """
+    documento = e.get("documento")
+    if documento and _DOC_GENERICO.match(_normalizar(documento)):
+        documento = None
+    return (not e.get("padrao") and e["grave"] and not e.get("condicional")
+            # produto tem quadro próprio; sanções são consequência prevista em lei, não exigência
+            and e["categoria"] not in ("especificacao_produto", "sancoes")
+            and bool(documento or _numero_da_regra(e["exigencia"])))
+
+
+def revisar_destaques(exigencias: list[dict]) -> None:
+    """Segunda opinião, no modelo principal, sobre o que é destaque.
+
+    A extração roda no modelo barato, que marca como "específica" quase tudo
+    (606 de 705 no IFFar). Revisar só os candidatos custa ~1 centavo: poucas
+    dezenas de linhas curtas, resposta de alguns números. Se a revisão falhar,
+    nada é marcado e a tela usa só o filtro do código.
+    """
+    candidatos = [e for e in exigencias if _candidato_destaque(e)]
+    if not candidatos:
+        return
+    linhas = "\n".join(
+        f"{i}. [{CATEGORIAS[e['categoria']]}] {e['exigencia']}"
+        + (f" (documento: {e['documento']})" if e.get("documento") else "")
+        for i, e in enumerate(candidatos, 1)
+    )
+    try:
+        resp = _chamar_json(SYSTEM_DESTAQUES, linhas, timeout=120, retries=1, modelo=OPENAI_MODEL)
+        manter = {int(n) for n in (resp or {}).get("manter") or [] if str(n).isdigit()}
+    except Exception:
+        return
+    for i, e in enumerate(candidatos, 1):
+        e["destaque"] = i in manter
 
 
 CATEGORIAS_EXECUCAO = ("entrega_execucao", "recebimento_pagamento", "garantia_assistencia", "sancoes")
@@ -411,8 +487,9 @@ FASE_DOCUMENTO = {"proposta": "com a proposta", "participacao": "credenciamento"
 # "Documentos de habilitação", "Documentos originais ou cópias autenticadas": nomes
 # genéricos que não dizem QUAL documento - os específicos já aparecem cada um na sua linha.
 _DOC_GENERICO = re.compile(
-    r"^(os )?documentos?( de habilitacao| originais( ou copias autenticadas)?| exigidos"
-    r"| previstos( no edital| no termo de referencia)?| complementares)?$"
+    r"^((os )?documentos?( de habilitacao| originais( ou copias autenticadas)?| exigidos"
+    r"| previstos( no edital| no termo de referencia)?| complementares)?"
+    r"|declarac(ao|oes)|certid(ao|oes)|comprovante|atestado)$"
 )
 
 
@@ -516,6 +593,45 @@ def _agrupar_destaques(destaques: list[dict]) -> list[dict]:
     return linhas
 
 
+_UNIDADES = {"dia", "dias", "util", "uteis", "corridos", "hora", "horas", "mes", "meses", "ano", "anos",
+              "prazo", "ate", "minimo", "minima", "maximo", "maxima", "apos", "contados", "partir"}
+
+
+def _agrupar_execucao(exigencias: list[dict]) -> list[dict]:
+    """Só o que tem número (prazo, percentual, valor), uma linha por regra.
+
+    Obrigações genéricas de contrato ("manter sigilo", "cumprir a legislação")
+    ficam na lista completa. A mesma regra repetida - no edital, no TR e na
+    minuta, ou uma vez por item ("Item 1: garantia de 12 meses"...) - vira uma
+    linha, com os itens e as cláusulas juntos.
+    """
+    linhas: list[dict] = []
+    for e in exigencias:
+        if not _numero_da_regra(e["exigencia"]):
+            continue
+        tokens = set(_chave_comparacao(e.get("curto") or e["exigencia"]).split()) - _PALAVRAS_VAZIAS
+        numeros = _numeros(tokens)
+        termos = tokens - numeros - _UNIDADES
+        linha = next((l for l in linhas if l["categoria"] == e["categoria"] and l["_numeros"] == numeros
+                      and termos and l["_termos"] and (termos <= l["_termos"] or l["_termos"] <= termos)), None)
+        if linha is None:
+            texto = re.sub(r"^\s*item \d+[.\d]*\s*[:-]\s*", "", e["exigencia"], flags=re.IGNORECASE)
+            linha = {"_numeros": numeros, "_termos": termos, "categoria": e["categoria"],
+                     "exigencia": texto[:1].upper() + texto[1:], "itens": [], "clausulas": [], "paginas": []}
+            linhas.append(linha)
+        if e.get("item") and e["item"] not in linha["itens"]:
+            linha["itens"].append(e["item"])
+        for c in e.get("clausulas") or []:
+            if c not in linha["clausulas"]:
+                linha["clausulas"].append(c)
+        if e.get("pagina") and e["pagina"] not in linha["paginas"]:
+            linha["paginas"].append(e["pagina"])
+    for l in linhas:
+        del l["_numeros"], l["_termos"]
+        l["paginas"].sort()
+    return linhas
+
+
 def resumir_exigencias(exigencias: list[dict] | None, itens_validos: set | None = None) -> dict | None:
     """Organiza a matriz em visões de uso, sem descartar nada.
 
@@ -534,16 +650,12 @@ def resumir_exigencias(exigencias: list[dict] | None, itens_validos: set | None 
 
     classificado = any("padrao" in e for e in exigencias)
     especificas = [e for e in exigencias if classificado and not e.get("padrao")]
-    # Destaque = específica, eliminatória e CONCRETA: pede um documento ou traz um
-    # número (prazo, percentual, índice). Regras genéricas que a IA às vezes marca
-    # como específicas ("obedecer às especificações", "preço dentro do máximo")
-    # ficam na lista completa - o critério é aplicado aqui, não deixado à IA.
+    # Destaque = candidato pelo filtro do código e, quando a revisão no modelo
+    # principal rodou (campo "destaque"), confirmado por ela.
+    revisado = any("destaque" in e for e in exigencias)
     destaques = _agrupar_destaques([
         e for e in especificas
-        if e["grave"] and not e.get("condicional")
-        # produto tem quadro próprio; sanções são consequência prevista em lei, não exigência
-        and e["categoria"] not in ("especificacao_produto", "sancoes")
-        and (e.get("documento") or _tem_numero(e["exigencia"]))
+        if _candidato_destaque(e) and (e.get("destaque") or not revisado)
     ])
     documentos = _agrupar_documentos(exigencias)
 
@@ -578,7 +690,7 @@ def resumir_exigencias(exigencias: list[dict] | None, itens_validos: set | None 
         "documentos": [d for d in documentos if not d["condicional"]],
         "documentos_condicionais": [d for d in documentos if d["condicional"]],
         "produto": produto_lista,
-        "execucao": [e for e in especificas if e["categoria"] in CATEGORIAS_EXECUCAO],
+        "execucao": _agrupar_execucao([e for e in especificas if e["categoria"] in CATEGORIAS_EXECUCAO]),
         "grupos": [
             {"chave": c, "rotulo": CATEGORIAS[c], "exigencias": por_cat[c]}
             for c in CATEGORIAS if c in por_cat
