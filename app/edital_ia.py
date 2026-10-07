@@ -65,6 +65,9 @@ Regras:
 dado não aparecer, use null (ou lista vazia).
 - Números em formato brasileiro ("R$ 128.406,59") viram float (128406.59). Datas em AAAA-MM-DD.
 - Use o hífen simples "-"; nunca o travessão longo "—".
+- Em "itens": se o edital mistura produtos (móveis, informática, equipamentos médicos...), liste SÓ \
+os itens de climatização, com o número original; se nenhum for de climatização, liste todos. Em \
+"total_itens_edital", informe quantos itens o edital tem ao todo.
 - Na avaliação, dê nota de 0 a 10 do ponto de vista da distribuidora (10 = muito favorável), com \
 justificativa curta e concreta citando o edital. Não decida se a empresa deve participar - apenas \
 avalie; a decisão é do setor de licitações.
@@ -100,6 +103,7 @@ Formato exato:
   "valor_sigiloso": true/false,
   "itens": [{"numero": "string", "descricao": "curta", "quantidade": número, "unidade": "string", \
 "capacidade_btu": número ou null, "valor_unitario_ref": número ou null, "valor_total_ref": número ou null}],
+  "total_itens_edital": quantos itens o edital tem no total (inteiro) ou null,
   "exclusivo_me_epp": true/false/null,
   "instalacao_inclusa": true/false/null,
   "prazo_entrega_dias": inteiro ou null,

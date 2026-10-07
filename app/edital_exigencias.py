@@ -422,6 +422,9 @@ critério legal de inexequibilidade, validade de proposta de até 90 dias, regra
 gerais (alíquotas, média de tributos recolhidos, EFD, desoneração), data e hora da sessão, valor \
 máximo estimado da contratação (já aparece na tabela de itens), e frases sem conteúdo próprio \
 ("cumprir o prazo assinalado", "observar o item X").
+A empresa só disputa itens de climatização: descarte também o que vale apenas para outros produtos \
+do edital (ex.: registro na ANVISA de item médico, CREA para montagem de porta-paletes, catálogo de \
+empilhadeira, Inmetro de mobiliário).
 Na dúvida, descarte: o quadro só tem valor se for curto. Um edital de modelo padrão pode não ter \
 nenhum destaque.
 
@@ -659,12 +662,20 @@ def resumir_exigencias(exigencias: list[dict] | None, itens_validos: set | None 
     ])
     documentos = _agrupar_documentos(exigencias)
 
+    # Item fora da tabela: um ou dois números soltos são leitura errada ("32 aparelhos"
+    # virou item 32) e valem para todos; vários são um edital misto, cuja tabela só tem
+    # os itens de climatização - as especificações dos outros produtos (cadeira,
+    # notebook...) ficam só na lista completa, em vez de "valer para todos".
+    specs = por_cat.get("especificacao_produto", [])
+    fora = {e["item"] for e in specs if itens_validos and e["item"] and e["item"] not in itens_validos}
+    edital_misto = len(fora) >= 3
     produto: dict[str, list] = {}
     vistos: dict[str, set] = {}
-    for e in por_cat.get("especificacao_produto", []):
-        # item que não existe na tabela (a IA leu "32 aparelhos" como item 32) vale para todos
+    for e in specs:
         item = e["item"] or ""
-        if itens_validos and item and item not in itens_validos:
+        if item in fora:
+            if edital_misto:
+                continue
             item = ""
         # etiqueta repetida no mesmo item ("tecnologia inverter" 2x, "selo Procel A" x
         # "classificação energética A Procel") não aparece de novo
@@ -690,6 +701,7 @@ def resumir_exigencias(exigencias: list[dict] | None, itens_validos: set | None 
         "documentos": [d for d in documentos if not d["condicional"]],
         "documentos_condicionais": [d for d in documentos if d["condicional"]],
         "produto": produto_lista,
+        "itens_outros_produtos": len(fora) if edital_misto else 0,
         "execucao": _agrupar_execucao([e for e in especificas if e["categoria"] in CATEGORIAS_EXECUCAO]),
         "grupos": [
             {"chave": c, "rotulo": CATEGORIAS[c], "exigencias": por_cat[c]}

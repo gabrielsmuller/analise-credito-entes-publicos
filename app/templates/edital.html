@@ -75,6 +75,15 @@
   {% endif %}
 </div>
 
+{% if documento_parcial %}
+<div class="aviso-erro">
+  <strong>⚠ Este arquivo parece não ser o edital completo.</strong>
+  Não foram encontradas a data da sessão nem a modalidade - provavelmente é só o termo de referência
+  ou um anexo. Itens e especificações estão analisados, mas o checklist, os prazos e a nota ficam
+  incompletos (muitas respostas "não consta"). Para a análise completa, envie o PDF do edital.
+</div>
+{% endif %}
+
 {% if e.texto_cortado %}
 <div class="aviso-erro">
   <strong>⚠ Edital longo: parte do texto não foi analisada.</strong>
@@ -235,7 +244,17 @@
 {% if e.itens %}
 <div class="cartao">
   <h3 class="titulo-secao">Itens e especificações do produto</h3>
-  {% if specs_gerais %}
+  {% if itens_parciais %}
+  <p class="dica" style="margin-top:0">Edital com produtos variados: aqui estão só os itens de
+    climatização ({{ e.itens|length }}{% if e.total_itens_edital %} de {{ e.total_itens_edital }} itens do
+    edital{% endif %}). Os demais itens e suas especificações estão na lista completa de exigências.</p>
+  {% endif %}
+  {% if specs_gerais and itens_parciais %}
+  <details class="mais-specs" style="margin-bottom:0.6rem">
+    <summary>Especificações sem número de item ({{ specs_gerais|length }}) - podem ser de outros produtos do edital</summary>
+    {% for x in specs_gerais %}<span class="chip" title="{{ x.exigencia }}{% if x.clausulas %} ({{ x.clausulas|join(', ') }}){% endif %}">{{ x.curto or x.exigencia }}</span>{% endfor %}
+  </details>
+  {% elif specs_gerais %}
   <div class="specs-gerais">
     <strong>Valem para todos os itens:</strong>
     {% for x in specs_gerais[:12] %}<span class="chip" title="{{ x.exigencia }}{% if x.clausulas %} ({{ x.clausulas|join(', ') }}){% endif %}">{{ x.curto or x.exigencia }}</span>{% endfor %}

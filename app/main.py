@@ -613,6 +613,11 @@ async def ver_edital(request: Request, edital_id: int):
         item["chave_item"] = normalizar_item(item.get("numero"))
         chaves_tabela.add(item["chave_item"])
     matriz = resumir_exigencias(dados.get("exigencias"), itens_validos=chaves_tabela - {None})
+    # edital misto: a tabela traz só os itens de climatização, e a soma deles não tem
+    # por que bater com o valor total do edital
+    total_itens = dados.get("total_itens_edital")
+    itens_parciais = bool((matriz or {}).get("itens_outros_produtos")) or (
+        isinstance(total_itens, int) and total_itens > len(dados.get("itens") or []))
     specs_gerais, specs_por_item = [], {}
     for grupo in (matriz or {}).get("produto", []):
         if grupo["item"] is None:
@@ -630,7 +635,11 @@ async def ver_edital(request: Request, edital_id: int):
             "prazos": prazos_edital(dados),
             # análises anteriores ao checklist fixo não o têm: a tela oferece reanalisar
             "checklist": dados.get("checklist") if isinstance(dados.get("checklist"), list) else None,
-            "conferencia": _conferir_itens(dados),
+            "conferencia": None if itens_parciais else _conferir_itens(dados),
+            "itens_parciais": itens_parciais,
+            # sem data da sessão nem modalidade, o arquivo quase sempre é só o termo de
+            # referência ou um anexo: checklist e prazos ficam incompletos
+            "documento_parcial": not dados.get("data_abertura") and not dados.get("modalidade"),
             "matriz": matriz,
             "categorias": CATEGORIAS,
             "specs_gerais": specs_gerais,
